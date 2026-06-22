@@ -94,6 +94,14 @@ function requalify(l: Lead, filterChains: boolean): Lead {
     address: l.address,
     lat: l.lat,
     lng: l.lng,
+    // Enrichment-Signale durchreichen -> Pain-Signale bleiben beim Requalify gleich.
+    siteReachable: l.siteReachable ?? null,
+    siteHttps: l.siteHttps ?? null,
+    siteResponsive: l.siteResponsive ?? null,
+    siteBuilder: l.siteBuilder ?? null,
+    instagramHandle: l.instagramHandle ?? null,
+    igChecked: l.igChecked ?? false,
+    igLastPostDaysAgo: l.igLastPostDaysAgo ?? null,
   };
   const q = qualify(s, { filterChains });
   return {
@@ -187,8 +195,8 @@ export default function Page() {
     if (!origin || categories.length === 0 || scanning) return;
     setScanErrors([]);
     const cats = [...categories].sort();
-    // v4: Engine v3 (Oberindikator) -> alte v3-Caches haben inkompatible Lead-Form.
-    const key = `v4|${origin.lat.toFixed(4)},${origin.lng.toFixed(4)},${radiusKm},${cats.join("+")}`;
+    // v5: Engine v3 + Website/IG-Enrichment -> aeltere Caches ohne Enrichment-Felder.
+    const key = `v5|${origin.lat.toFixed(4)},${origin.lng.toFixed(4)},${radiusKm},${cats.join("+")}`;
 
     setScanning(true);
     const started = Date.now();

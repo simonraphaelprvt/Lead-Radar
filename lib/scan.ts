@@ -9,7 +9,8 @@
 // ====================================================================
 
 import { qualifyAreaMulti, placesConfigured } from "./places";
-import { qualify, type BusinessSignals, type QualifyOptions } from "./reasoning";
+import { qualify, runKO, type BusinessSignals, type QualifyOptions } from "./reasoning";
+import { enrichSite } from "./enrich";
 import { getCategory } from "./categories";
 import type { Lead, Einstufung } from "./types";
 
@@ -19,6 +20,28 @@ export interface ScanResult {
 }
 
 const EINSTUFUNG_RANK: Record<Einstufung, number> = { IN_NEED: 0, INTERESTED: 1, COMMON: 2, RAUS: 3 };
+
+// Enrichment: nur Nicht-KO-Leads mit Website, Concurrency-Pool + hartes
+// Zeitbudget. Was nicht rechtzeitig faellt, bleibt un-angereichert (-> Pain-
+// Signale "nicht pruefbar" -> Erstkontakt). Haengt den Scan nie auf.
+const ENRICH_CONCURRENCY = 10;
+const ENRICH_BUDGET_MS = 28_000;
+
+async function enrichSignals(signals: BusinessSignals[], opts?: QualifyOptions): Promise<void> {
+  const targets = signals.filter((s) => !!s.website && !runKO(s, opts));
+  if (targets.length === 0) return;
+  const deadline = Date.now() + ENRICH_BUDGET_MS;
+  let next = 0;
+  async function worker() {
+    while (next < targets.length && Date.now() < deadline) {
+      const s = targets[next++];
+      const intel = await enrichSite(s.website, { igProbe: true });
+      Object.assign(s, intel);
+    }
+  }
+  const workers = Array.from({ length: Math.min(ENRICH_CONCURRENCY, targets.length) }, worker);
+  await Promise.all(workers);
+}
 
 function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
@@ -42,7 +65,7 @@ function toLead(s: BusinessSignals, opts?: QualifyOptions): Lead {
     )}`,
     imageUrl: undefined,
     photoUrl: undefined,
-    instagram: undefined,
+    instagram: s.instagramHandle ? `https://instagram.com/${s.instagramHandle}` : undefined,
 
     categoryLabel: s.categoryLabel,
     rating: s.rating ?? null,
@@ -50,6 +73,15 @@ function toLead(s: BusinessSignals, opts?: QualifyOptions): Lead {
     priceLevel: s.priceLevel ?? null,
     photoCount: s.photoCount ?? null,
     types: s.types,
+
+    // Enrichment-Signale auf dem Lead sichern (fuer Cache + reines Requalify).
+    siteReachable: s.siteReachable ?? null,
+    siteHttps: s.siteHttps ?? null,
+    siteResponsive: s.siteResponsive ?? null,
+    siteBuilder: s.siteBuilder ?? null,
+    instagramHandle: s.instagramHandle ?? null,
+    igChecked: s.igChecked ?? false,
+    igLastPostDaysAgo: s.igLastPostDaysAgo ?? null,
 
     einstufung: q.einstufung,
     tier: q.tier,
@@ -98,6 +130,7 @@ export async function scanAndQualify(
 
   try {
     const signals = await qualifyAreaMulti(queries, origin.lat, origin.lng, radiusKm * 1000);
+    await enrichSignals(signals, opts); // Website/IG anreichern (best-effort, gebudgetet)
     const leads = sortLeads(signals.map((s) => toLead(s, opts)));
     return { leads, errors: [] };
   } catch (e) {

@@ -421,6 +421,15 @@ function scoreNeed(s: BusinessSignals): Teilscore {
   } else {
     signale.push("eigene Website vorhanden");
   }
+  // Kein moderner Online-Auftritt (aus Enrichment): generische/veraltete Praesenz
+  // erhoeht den Bedarf - genau "generische Website / ohne modernen Auftritt".
+  if (s.siteBuilder) { score += 12; signale.push(`${s.siteBuilder}-Baukasten`); }
+  if (s.igChecked === true && !s.instagramHandle) { score += 15; signale.push("keine Instagram-Praesenz"); }
+  if (typeof s.igLastPostDaysAgo === "number" && s.igLastPostDaysAgo > C.IG_INAKTIV_TAGE) {
+    score += 12; signale.push(`Instagram inaktiv (${s.igLastPostDaysAgo}d)`);
+  }
+  if (s.siteResponsive === false) { score += 8; signale.push("nicht responsive"); }
+
   if (hayHasAny(categoryHay(s), VISUELL_NIEDRIG)) {
     score += C.NEED_REINE_DIENSTLEISTUNG;
     signale.push("reine Dienstleistung (geringerer Content-Bedarf)");

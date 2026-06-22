@@ -60,6 +60,15 @@ export interface Lead {
   photoCount?: number | null;
   types?: string[];
 
+  // ---- Enrichment (Website-/Instagram-Fetch, server-seitig) ----
+  siteReachable?: boolean | null;
+  siteHttps?: boolean | null;
+  siteResponsive?: boolean | null;
+  siteBuilder?: string | null;
+  instagramHandle?: string | null;
+  igChecked?: boolean;
+  igLastPostDaysAgo?: number | null;
+
   // ---- Reasoning-Engine v3 (Oberindikator) ----
   einstufung: Einstufung; // IN_NEED | INTERESTED | COMMON | RAUS  (EINZIGER Indikator)
   tier: Tier; // A | B | C  (nur Liste/Detail)
