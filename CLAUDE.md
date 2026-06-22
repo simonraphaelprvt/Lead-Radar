@@ -10,7 +10,7 @@ Kontext-Datei für Claude Code. Enthält **alles**, was ein neuer Chat über die
 
 **Lead Radar** ist Simons persönliches Akquise- und Vertriebs-Werkzeug. Simon ist selbstständiger Content-Stratege/Videograf (Kleingewerbe, Region Laubach/Gießen) und gewinnt lokale & regionale Businesses als Retainer-Kunden für Social-Media-Betreuung (Zielpreis 1.000–3.000 €/Monat pro Kunde).
 
-Die App: eine dunkle **Satellitenkarte** im ruhigen Studio-Stil, auf der per Knopfdruck ein Scan über ein Gebiet läuft. Gefundene Businesses werden durch eine **signalbasierte Reasoning-Engine** qualifiziert (**HOT / WARM / COLD / RAUS**), erscheinen als farbcodierte Marker und in einer sortierbaren Liste. Leads landen in einer **Notion-Pipeline** und bekommen auf Knopfdruck personalisierten **Outreach** (Content-Idee + Instagram-DM + E-Mail).
+Die App: eine dunkle **Satellitenkarte** im ruhigen Studio-Stil, auf der per Knopfdruck ein Scan über ein Gebiet läuft. Gefundene Businesses werden durch eine **signalbasierte Reasoning-Engine (v3)** auf EINEN Oberindikator verrechnet (**IN NEED / INTERESTED / COMMON**, plus **RAUS** aus dem KO-Filter), erscheinen als farbcodierte Marker (rot/orange/blau) und in einer sortierbaren Liste. Leads landen in einer **Notion-Pipeline** und bekommen auf Knopfdruck personalisierten **Outreach** (Content-Idee + Instagram-DM + E-Mail).
 
 Single-User-Tool. Kein Login, keine Accounts.
 
@@ -52,7 +52,7 @@ npm run build    # Production-Build (type-check inklusive)
 
 ### Notion (Pipeline)
 - Interne Integration. `NOTION_API_KEY` + `NOTION_LEADS_DATABASE_ID`. DB muss mit der Integration geteilt sein.
-- Property-Namen zentral in `lib/constants.ts` → `NOTION_PROPS`. Mapping: `Bewertung` = Einstufung (HOT/WARM/COLD/RAUS), `Score` = Substanz, die Legacy-Zahlenspalten `Zahlungskraft/Bedarf/Fit` tragen jetzt die drei Substanz-Teilscores (finanzielle/schmerz/visuell). API-Version `2022-06-28`.
+- Property-Namen zentral in `lib/constants.ts` → `NOTION_PROPS`. Mapping (v3): `Bewertung` = Oberindikator (Label „IN NEED"/„INTERESTED"/„COMMON"/„RAUS"), `Score` = `final_score`, die Zahlenspalten `Zahlungskraft/Bedarf/Fit` tragen jetzt die echten Rohachsen `pay/need/fit`. `pageToLead` mappt Legacy-Werte (HOT/WARM/COLD) sauber auf die neuen. API-Version `2022-06-28`.
 
 ### Anthropic (Outreach)
 - Optional. Ohne `ANTHROPIC_API_KEY` → Template-Modus (`lib/outreach.ts`). Mit Key → KI-Modus, Modell `claude-sonnet-4-6`, `anthropic-version: 2023-06-01`.
@@ -87,18 +87,19 @@ app/
     outreach/route.ts    KI- oder Template-Outreach
 components/
   MapView.tsx            Leaflet (Satellit + Labels, ruhige Tier-Pins, Origin-Pin, Radius-Kreis)
-  Hud.tsx                Kopfleiste: Einstufungs-Zähler (HOT/WARM/COLD/RAUS) + Ansicht-Umschalter
+  Hud.tsx                Kopfleiste: Oberindikator-Zähler (IN NEED/INTERESTED/COMMON/RAUS) + Ansicht-Umschalter
   SearchPanel.tsx        Radius, Ketten-Toggle, Branchen (ohne "low"-Sektor), Scan-Button
-  LeadList.tsx           Tabelle: Tier, Einstufung, Substanz, Rating, Reviews
-  LeadDrawer.tsx         Detail: Foto-Hero, Substanz-Achsen mit Signalen, KO-Grund, Erstkontakt-Checkliste
+  LeadList.tsx           Tabelle: Oberindikator + Rohwert-Spalten (final/pay/need/fit/pain) + Tier, Such-/Stufen-Filter, Presets
+  LeadDrawer.tsx         Detail: Foto-Hero, Verrechnung (pay/need/fit-Achsen), Pain-Signal-Aufschlüsselung (✓/—/?), Erstkontakt-Checkliste
   PipelineBoard.tsx      Kanban aus Notion
-  Badges.tsx             EinstufungBadge (HOT/WARM/COLD/RAUS) + TierBadge
+  Badges.tsx             EinstufungBadge (IN NEED/INTERESTED/COMMON/RAUS) + TierBadge
   SatelliteThumb.tsx     statisches Esri-Luftbild (Fallback, wenn kein Google-Foto)
   OutreachPanel.tsx, ViewSwitcher.tsx, CopyButton.tsx
 lib/
-  reasoning.ts           ENGINE (Herzstück): Config + KO + Substanz + Tier + HOT/WARM/COLD + Output
+  reasoning.ts           ENGINE v3 (Herzstück): Config + KO + pay/need/fit + Pain-Signale + Verrechnung -> IN NEED/INTERESTED/COMMON
+  enrich.ts              Website-/Instagram-Fetch (server-only): HTTPS/Responsive/Baukasten/IG-Handle -> speist need + Pain-Signale
   places.ts              Google Bulk-Qualify -> BusinessSignals
-  scan.ts                Scan-Orchestrierung (server): places + reasoning -> bewertete Leads, sortiert
+  scan.ts                Scan-Orchestrierung (server): places + enrich + reasoning -> bewertete Leads, sortiert
   google.ts              Google Places Details + Street View (Lead-Foto/Telefon, server-only)
   categories.ts          Branchen-Katalog (Labels = Google-Suchbegriffe, Gruppen core/adjacent/low/b2b)
   constants.ts           NOTION_PROPS, RATING_COLORS, APP_CONFIG, Storage-Keys
@@ -117,23 +118,29 @@ lib/
 1. Pin auf der Karte setzen (Klick) oder ziehen, Radius-Slider (1–25 km).
 2. Branchen wählen, optional Ketten-Filter umschalten.
 3. „Scan starten" → `POST /api/places` → Google holt pro Branche bis 20 Businesses MIT Signalen → `qualify()` bewertet jeden → sortierte Leads (HOT > WARM > COLD > RAUS, Tier-C/on_hold ans Ende).
-4. **Cache (localStorage):** identische Suchen kommen 24 h aus dem Cache (`v3|`-Präfix). Google-Kontaktdaten/Foto pro Lead separat gecacht.
+4. **Cache (localStorage):** identische Suchen kommen 24 h aus dem Cache (`v5|`-Präfix — bei jeder Änderung der Lead-Form HOCHZÄHLEN, sonst liefern alte Caches inkompatible Leads → Crash/Fehlanzeige). Google-Kontaktdaten/Foto pro Lead separat gecacht.
 5. **Ketten-Toggle wirkt live**: Beim Umschalten werden die Leads im Browser über `qualify()` neu bewertet (`requalify` in `page.tsx`) — kein Re-Scan nötig, weil alle Signale im Lead stecken und die Engine rein ist.
 
 ---
 
-## Reasoning-Engine (Herzstück) — `lib/reasoning.ts`
+## Reasoning-Engine v3 (Herzstück) — `lib/reasoning.ts`
 
-**Kernregel (nicht wegoptimieren): Es ist ein Signal-Problem.** Die Engine bewertet AUSSCHLIESSLICH Signale, die real in den Daten stehen. Alles andere wird als „im Erstkontakt prüfen" mit Status `unbekannt` ausgegeben und **nie gescort**. Kein Feld wird geschätzt, geraten oder erfunden. Alle Schwellen/Listen stehen oben in `REASONING_CONFIG` (tunebar).
+**Kernregel (nicht wegoptimieren): Es ist ein Signal-Problem.** Die Engine bewertet AUSSCHLIESSLICH Signale, die real in den Daten stehen. Was nicht prüfbar ist, bleibt „im Erstkontakt prüfen" und wird **nie gescort/erfunden**. Alle Schwellen/Listen stehen oben in `REASONING_CONFIG` (tunebar).
+
+**EINZIGER Oberindikator** (das, was auf der Karte zählt): **IN NEED / INTERESTED / COMMON** (+ **RAUS** aus dem KO). Die Rohachsen sind die Begründung dahinter und wandern in Liste/Detail, NICHT auf die Karte.
 
 Pipeline pro Business:
-1. **KO-Filter** (ein Treffer → `RAUS`, keine weitere Bewertung): Kette (`KETTEN_BLACKLIST`, **umschaltbar** via `filterChains`), Fast-Food/Imbiss/Döner (Google-`primaryType` + Namensbegriffe, **harte KO**), Dienstleistung ohne Anker (Versicherung/Steuer/Kanzlei/Callcenter/…), keine eigene Website + wenige Reviews, schwaches Rating bei wenig Volumen, Auto-Spezialfall (keine Vertragsmarke + < 30 Reviews → Mini-Autohütte).
-2. **Substanz-Score (0–100, nur scrapebare Signale):** finanzielle Substanz (50 %: Marke, Reviews, Preislevel, eigene Domain vs. Aggregator, Fotos), visuell darstellbar (35 %: aus Kategorie), Schmerzpunkt (15 %, schwach). Fehlende Signale fließen NICHT ein (Gewichte werden über die vorhandenen renormiert). Jeder Teilscore speichert die treibenden `signale`.
-3. **Tier** (aus `categoryLabel`, NICHT aus Google-Typen — siehe Stolperfallen): A = Hotels/Resorts/Event/Gastro, B = lokale Dienstleister mit Inhaber-Gesicht (Beauty/Friseur/Fitness/Praxis), C = Automotive/B2B/Kanzleien.
-4. **Einstufung:** HOT = Substanz ≥ `SUBSTANZ_HOT` (80), WARM ≥ 45, sonst COLD. **Tier C wird nie HOT** (Strategie: auf Eis) → max WARM, `tier_c_on_hold = true`, Empfehlung „spaeter".
-5. **Output** (`QualifiedLead`): einstufung, tier, substanz_score, ko_grund, scrapebare_bewertung (3 Teilscores + Signale), im_erstkontakt_pruefen (4× `unbekannt`), empfehlung, begruendung_kurz.
+1. **KO-Filter** (ein Treffer → `RAUS`): Kette (`KETTEN_BLACKLIST`, **umschaltbar** via `filterChains`), Fast-Food/Imbiss/Döner (harte KO), Dienstleistung ohne Anker, keine eigene Website + wenige Reviews, schwaches Rating bei wenig Volumen, Auto-Mini-Hütte.
+2. **Rohachsen (je 0–100):** `pay_score` (Branchen-Basis × Preislevel × Größe/Reviews × Auto-Marke), `need_score` (grob branchenbasiert: keine/aggregierte Website, etabliert-aber-unsichtbar, **plus Enrichment-Signale**: Baukasten, keine IG-Präsenz, IG inaktiv, nicht responsive), `fit_score` (Passung zu Simons Kernbranchen: Gastro/Automotive/Nightlife/Fitness/Hospitality).
+3. **Pain-Signale (einzeln belegt):** jedes Signal trägt `weight` (hoch/mittel/niedrig), `found`, `pruefbar` und einen konkreten `beleg`. `pain_match_score` = gewichtete Summe der GEFUNDENEN Signale (hoch 45 / mittel 25 / niedrig 12, clamp 100). Signale aus Places (keine Website, etabliert-unsichtbar, Produkt-ohne-Sichtbarkeit, Fachkräftemangel-Branche) sind immer prüfbar; IG-/Website-Tech-Signale nur mit Enrichment, sonst `pruefbar:false → Erstkontakt`.
+4. **Verrechnung:** `zwischen = need × (0.5 + 0.5·pain/100)` (Pain verstärkt Need), `final = zwischen × (0.3 + 0.7·pay/100)` (Pay als Gate+Multiplikator). **fit < 40 → max COMMON.**
+5. **Oberindikator (scharfe Schwellen):** **IN NEED** = final ≥ 65 **und** pay ≥ 65 **und** fit ≥ 60 **und** ≥1 belegtes High-Weight-Pain. **INTERESTED** = final ≥ 40 und fit ≥ 50. Sonst **COMMON**. (Konsequenz der Multiplikation: IN NEED erreicht praktisch nur ein quasi-unsichtbarer Betrieb — meist OHNE eigene Website. Bewusst so „verschärft".)
+6. **Output** (`QualifiedLead`): einstufung, tier (+`tier_c_on_hold`=off-profile), pay/need/fit/pain_match/final, `pay`/`need`/`fit` (Teilscores mit Signalen), `pain_signals[]`, ko_grund, im_erstkontakt_pruefen (4× `unbekannt`), empfehlung, begruendung_kurz.
 
-`Lead` (in `types.ts`) trägt diese Felder direkt; `scan.ts` mappt `BusinessSignals` + `QualifiedLead` → `Lead`.
+`Lead` (in `types.ts`) trägt diese Felder direkt (+ Enrichment-Felder `site*`/`instagramHandle`/`ig*`); `scan.ts` mappt `BusinessSignals` + `QualifiedLead` → `Lead`. Die Engine ist rein → `requalify` (Ketten-Toggle) rechnet live im Browser neu.
+
+### Enrichment — `lib/enrich.ts` (server-only, Layer im Scan)
+Pro Nicht-KO-Lead mit Website wird die Seite gefetcht (best-effort, Concurrency-Pool 10, hartes 28s-Budget — hängt den Scan nie auf) und liefert REALE Datenpunkte: HTTPS, Responsive-Viewport, erkannter Baukasten (Wix/Jimdo/…), verlinktes **Instagram-Handle** und best-effort IG-Aktivität (meist `null` → ehrlich „nicht ermittelbar"). Diese Signale speisen `need_score` und die Pain-Signale 5–7. Ergebnisse liegen auf dem Lead (Cache + reines Requalify).
 
 ---
 
@@ -141,7 +148,7 @@ Pipeline pro Business:
 
 **Ruhiges, dichtes Studio — wie Linear / Vercel-Dashboard / Stripe / Mercury. NICHT Game-HUD/Terminal.**
 Bewusst NICHT: Scanlines, Glow, Radar-Sweep, Boot-Sequenz, pulsierende Pins, Neon auf Schwarz, Mono als durchgehende UI-Schrift.
-Stattdessen: sehr dunkle neutrale Basis (`#0B0B0C`), viel Grau, EIN ruhiger entsättigter Blau-Akzent (`#6E92C9`, abgeleitet aus dem früheren `#4d8df0`). Inter fürs UI, Mono nur für Zahlen/Scores/IDs. Tier-Farben gedämpft: HOT `#DA5B4A`, WARM `#C79A5B` (Sand), COLD `#7A7A80`, RAUS `#46464A` (fast ausgegraut). Farbe nur als kleiner Marker/Rand. Karte = Satellit, leicht abgedunkelt; Pins schlicht, ausgewählter Pin = ruhiger Ring (keine Dauer-Animation). Motion 120–200 ms, ease-out, nur funktional.
+Stattdessen: sehr dunkle neutrale Basis (`#0B0B0C`), viel Grau, EIN ruhiger entsättigter Blau-Akzent (`#6E92C9`). Inter fürs UI, Mono nur für Zahlen/Scores/IDs. **Oberindikator-Farben:** IN NEED `#DA5B4A` (rot), INTERESTED `#D9913F` (orange), COMMON `#6E8FB0` (blau), RAUS `#46464A` (ausgegraut) — Tokens `--in-need`/`--interested`/`--common` in `globals.css`, Marker-Klassen `.mk--in_need|interested|common|raus`. Farbe nur als kleiner Marker/Rand. Karte = Satellit, leicht abgedunkelt; Pins schlicht, ausgewählter Pin = ruhiger Ring (keine Dauer-Animation). Motion 120–200 ms, ease-out, nur funktional.
 Farb-Tokens in `tailwind.config.ts` (Gruppen heißen historisch `terminal`/`phosphor`) + CSS-Variablen in `globals.css`.
 
 ---
@@ -165,6 +172,9 @@ Farb-Tokens in `tailwind.config.ts` (Gruppen heißen historisch `terminal`/`phos
 - Karte braucht **`isolate`** im Wrapper + **`map.invalidateSize()`** (ResizeObserver + Timeout), sonst übermalen Leaflets z-index-Panes die Overlays bzw. bleiben Kacheln grau.
 - **React Fast-Refresh meckert**, wenn man die Länge eines `useEffect`-Dependency-Arrays live ändert („final argument changed size between renders"). Reines HMR-Artefakt, in Produktion irrelevant — ein sauberer Dev-Server-Neustart räumt es weg.
 - **Overpass/OSM ist raus** — falls du alten Code suchst: `lib/scoring.ts`/`overpass.ts`/`instagram.ts` wurden entfernt.
+- **Lead-Form geändert → Cache-Präfix (`v5|` in `page.tsx`) hochzählen.** Sonst lädt der 24h-Cache alte Leads ohne die neuen Felder → Zähler/Liste brechen (genau so beim v3-Umbau passiert).
+- **Instagram-Aktivität ist server-seitig kaum scrapebar** (Login-Wall). `enrich.ts` zieht das IG-Handle aus der Website (zuverlässig), aber das Last-Post-Datum bleibt meist `null` → Signal „IG inaktiv" ehrlich „nicht prüfbar → Erstkontakt". NICHT anfangen zu raten.
+- **IN NEED ist absichtlich selten** (Multiplikation need×pain×pay + scharfe Schwellen). Wenn ein Scan 0× IN NEED zeigt, ist das meist KORREKT (Betriebe mit eigener Website kommen kaum über INTERESTED). Nicht „nachhelfen", ohne die Schwellen in `REASONING_CONFIG` bewusst zu ändern.
 - Bei lokalem Testen: nie `npm run build` während `npm run dev` läuft (beide schreiben `.next`).
 
 ---
