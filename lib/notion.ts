@@ -6,8 +6,19 @@
 // Property-Namen kommen zentral aus constants.ts (NOTION_PROPS).
 // ====================================================================
 
-import { NOTION_PROPS } from "./constants";
+import { NOTION_PROPS, EINSTUFUNG_LABEL } from "./constants";
 import type { Lead, Einstufung, Empfehlung, PipelineStatus } from "./types";
+
+/** Notion-Wert -> Einstufung; faengt Legacy-Werte (HOT/WARM/COLD) sauber ab. */
+function normEinstufung(v?: string): Einstufung {
+  switch ((v ?? "").toUpperCase()) {
+    case "IN NEED": case "IN_NEED": case "HOT": return "IN_NEED";
+    case "INTERESTED": case "WARM": return "INTERESTED";
+    case "COMMON": case "COLD": return "COMMON";
+    case "RAUS": return "RAUS";
+    default: return "COMMON";
+  }
+}
 
 const NOTION_BASE = "https://api.notion.com/v1";
 const NOTION_VERSION = "2022-06-28";
@@ -58,13 +69,13 @@ export function leadToProperties(lead: Lead): Record<string, unknown> {
   return {
     [P.name]: title(lead.name),
     [P.status]: select(lead.status ?? "Neu"),
-    // Bewertung = Einstufung, Score = Substanz. Die Legacy-Zahlenspalten
-    // (Zahlungskraft/Bedarf/Fit) tragen jetzt die drei Substanz-Teilscores.
-    [P.rating]: select(lead.einstufung),
-    [P.score]: num(lead.substanzScore),
-    [P.pay]: num(lead.substanz.finanzielle.score),
-    [P.need]: num(lead.substanz.schmerz.score),
-    [P.fit]: num(lead.substanz.visuell.score),
+    // Bewertung = Oberindikator (IN NEED/INTERESTED/COMMON), Score = final_score.
+    // Die Zahlenspalten tragen jetzt die echten Rohachsen pay/need/fit.
+    [P.rating]: select(EINSTUFUNG_LABEL[lead.einstufung]),
+    [P.score]: num(lead.finalScore),
+    [P.pay]: num(lead.payScore),
+    [P.need]: num(lead.needScore),
+    [P.fit]: num(lead.fitScore),
     [P.branch]: richText(lead.categoryLabel),
     [P.instagram]: url(typeof lead.instagram === "string" ? lead.instagram : null),
     [P.phone]: phone(lead.phone),
@@ -123,14 +134,15 @@ function readPhone(prop: any): string | undefined {
 /** Eine Notion-Page in ein (Teil-)Lead-Objekt fuer das Pipeline-Board uebersetzen. */
 export function pageToLead(page: NotionPage): Lead {
   const props = page.properties;
-  const einstufung = (readSelect(props[P.rating]) as Einstufung) ?? "COLD";
+  const einstufung = normEinstufung(readSelect(props[P.rating]));
   const status = (readSelect(props[P.status]) as PipelineStatus) ?? "Neu";
-  const fin = readNumber(props[P.pay]) ?? 0;
-  const schmerz = readNumber(props[P.need]) ?? 0;
-  const vis = readNumber(props[P.fit]) ?? 0;
+  const payScore = readNumber(props[P.pay]) ?? 0;
+  const needScore = readNumber(props[P.need]) ?? 0;
+  const fitScore = readNumber(props[P.fit]) ?? 0;
+  const finalScore = readNumber(props[P.score]) ?? 0;
   const empfehlung: Empfehlung =
-    einstufung === "RAUS" ? "raus" : einstufung === "COLD" ? "spaeter" : "kontaktieren";
-  const leer = { signale: [] as string[], begruendung: "" };
+    einstufung === "RAUS" ? "raus" : einstufung === "COMMON" ? "spaeter" : "kontaktieren";
+  const leer = { signale: [] as string[], begruendung: "aus Pipeline geladen" };
   return {
     id: page.id,
     notionPageId: page.id,
@@ -153,24 +165,21 @@ export function pageToLead(page: NotionPage): Lead {
     einstufung,
     tier: "B",
     tierCOnHold: false,
-    substanzScore: readNumber(props[P.score]) ?? 0,
-    // Pain-Match wird nicht in Notion gespeichert (Scan-Qualifier, kein Pipeline-Feld).
-    painMatch: {
-      level: "niedrig",
-      kapital_score: 0,
-      kapital_signale: [],
-      loesbar: vis >= 45,
-      anlass_status: "unbekannt",
-      begruendung: "aus Pipeline geladen - Pain-Match nicht gespeichert",
-    },
+    payScore,
+    needScore,
+    fitScore,
+    painMatchScore: 0,
+    finalScore,
+    // Pain-Signale werden nicht in Notion gespeichert (Scan-Artefakt).
+    painSignals: [],
     koAusgeschlossen: einstufung === "RAUS",
     koGrund: null,
     empfehlung,
     begruendungKurz: "",
-    substanz: {
-      finanzielle: { score: fin, ...leer },
-      visuell: { score: vis, ...leer },
-      schmerz: { score: schmerz, ...leer },
+    achsen: {
+      pay: { score: payScore, ...leer },
+      need: { score: needScore, ...leer },
+      fit: { score: fitScore, ...leer },
     },
     erstkontakt: {
       entscheider_erreichbar: "unbekannt",

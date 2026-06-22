@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Lead, Teilscore } from "@/lib/types";
-import { EINSTUFUNG_COLOR, PAIN_COLOR, EinstufungBadge, TierBadge, PainMatchBadge } from "./Badges";
+import type { Lead, Teilscore, PainSignal } from "@/lib/types";
+import { EINSTUFUNG_COLOR, PAIN_WEIGHT_COLOR, EinstufungBadge, TierBadge } from "./Badges";
+import { EINSTUFUNG_LABEL } from "@/lib/constants";
 import OutreachPanel from "./OutreachPanel";
 import CopyButton from "./CopyButton";
 import SatelliteThumb from "./SatelliteThumb";
@@ -48,7 +49,6 @@ function Hero({ lead, googleEnabled }: { lead: Lead; googleEnabled: boolean | nu
       <div className="absolute left-3 top-3 flex items-center gap-1.5">
         <EinstufungBadge e={lead.einstufung} />
         <TierBadge t={lead.tier} onHold={lead.tierCOnHold} />
-        {lead.einstufung !== "RAUS" && <PainMatchBadge p={lead.painMatch.level} />}
       </div>
     </div>
   );
@@ -70,6 +70,32 @@ function AxisBar({ label, score, ts }: { label: string; score: number; ts: Teils
           {ts.signale.join(" · ")}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Ein einzeln belegtes Pain-Signal: Status-Icon + Gewicht + Beleg. */
+function PainRow({ s }: { s: PainSignal }) {
+  const icon = s.found ? "✓" : s.pruefbar ? "—" : "?";
+  const color = s.found ? PAIN_WEIGHT_COLOR[s.weight] : "var(--muted)";
+  return (
+    <div className="flex items-start gap-2 text-[11px]">
+      <span
+        className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded text-[9px] font-bold"
+        style={{ color, border: `1px solid ${color}59` }}
+        title={s.found ? "belegt" : s.pruefbar ? "geprüft, nicht zutreffend" : "nicht prüfbar → Erstkontakt"}
+      >
+        {icon}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className={s.found ? "text-phosphor-text" : "text-phosphor-muted"}>{s.label}</span>
+          <span className="shrink-0 font-mono text-[9px] uppercase tracking-wide text-phosphor-dimtext">
+            {s.weight}
+          </span>
+        </div>
+        <div className="text-[10px] leading-snug text-phosphor-dimtext">{s.beleg}</div>
+      </div>
     </div>
   );
 }
@@ -146,61 +172,44 @@ export default function LeadDrawer(props: DrawerProps) {
             <div className="panel rounded-lg border p-3.5">
               <div className="mb-3 flex items-baseline justify-between">
                 <span className="text-[10px] uppercase tracking-wide text-phosphor-muted">
-                  Substanz (scrapebar)
+                  {EINSTUFUNG_LABEL[lead.einstufung]} · Verrechnung
                 </span>
-                <span className="font-mono text-[20px] font-semibold tabular-nums text-phosphor-text">
-                  {lead.substanzScore}
+                <span className="font-mono text-[20px] font-semibold tabular-nums" style={{ color: EINSTUFUNG_COLOR[lead.einstufung] }}>
+                  {lead.finalScore}
                   <span className="text-[12px] text-phosphor-muted">/100</span>
                 </span>
               </div>
               <div className="space-y-3">
-                <AxisBar label="Finanzielle Substanz" score={lead.substanz.finanzielle.score} ts={lead.substanz.finanzielle} />
-                <AxisBar label="Visuell darstellbar" score={lead.substanz.visuell.score} ts={lead.substanz.visuell} />
-                <AxisBar label="Schmerzpunkt (schwach)" score={lead.substanz.schmerz.score} ts={lead.substanz.schmerz} />
+                <AxisBar label="Zahlungskraft (pay)" score={lead.payScore} ts={lead.achsen.pay} />
+                <AxisBar label="Bedarf (need)" score={lead.needScore} ts={lead.achsen.need} />
+                <AxisBar label="Fit zum Kernprofil" score={lead.fitScore} ts={lead.achsen.fit} />
+              </div>
+              <div className="mt-3 rounded-md border border-terminal-border px-2.5 py-1.5 text-[10px] leading-snug text-phosphor-dimtext">
+                final = need × (0.5 + 0.5·pain) × (0.3 + 0.7·pay). Fit unter 40 → max COMMON.
               </div>
             </div>
           )}
 
-          {/* Pain-Match: Kapital x Loesbarkeit (zweite Achse) */}
+          {/* Pain-Signale: jedes einzeln, an einem konkreten Datenpunkt belegt */}
           {!raus && (
             <div className="panel rounded-lg border p-3.5">
               <div className="mb-3 flex items-center justify-between">
                 <span className="text-[10px] uppercase tracking-wide text-phosphor-muted">
-                  Pain-Match (Kapital × Lösbarkeit)
+                  Pain-Signale (einzeln belegt)
                 </span>
-                <PainMatchBadge p={lead.painMatch.level} />
+                <span className="font-mono text-[12px] tabular-nums text-phosphor-text">
+                  {lead.painMatchScore}<span className="text-[10px] text-phosphor-muted">/100</span>
+                </span>
               </div>
-
-              {/* Kapital-Achse (Kern) */}
-              <div>
-                <div className="flex items-baseline justify-between">
-                  <span className="text-[11px] text-phosphor-muted">Kapitaleinschätzung</span>
-                  <span className="font-mono text-[12px] tabular-nums text-phosphor-text">
-                    {lead.painMatch.kapital_score}
-                  </span>
-                </div>
-                <div className="mt-1 h-1 w-full overflow-hidden rounded bg-terminal-panel-2">
-                  <div
-                    className="h-full rounded"
-                    style={{ width: `${lead.painMatch.kapital_score}%`, background: PAIN_COLOR[lead.painMatch.level] }}
-                  />
-                </div>
-                {lead.painMatch.kapital_signale.length > 0 && (
-                  <div className="mt-1 text-[10px] leading-snug text-phosphor-dimtext">
-                    {lead.painMatch.kapital_signale.join(" · ")}
-                  </div>
+              <div className="space-y-2.5">
+                {lead.painSignals.map((s) => <PainRow key={s.key} s={s} />)}
+                {lead.painSignals.length === 0 && (
+                  <div className="text-[11px] text-phosphor-muted">Keine Pain-Signale (aus Pipeline geladen).</div>
                 )}
               </div>
-
-              {/* Loesbarkeit + Anlass-Hinweis */}
-              <div className="mt-3 flex items-center gap-2 text-[11px]">
-                <span className={lead.painMatch.loesbar ? "text-phosphor-text" : "text-phosphor-muted"}>
-                  {lead.painMatch.loesbar ? "✓ durch Content lösbar" : "○ kaum durch Content lösbar"}
-                </span>
-              </div>
-              <div className="mt-2 rounded-md border border-terminal-border px-2.5 py-1.5 text-[10px] leading-snug text-phosphor-dimtext">
-                Konkreter Anlass (Launch / Event / Recruiting) & Phase vs. Einzelevent sind nicht aus
-                Scan-Daten ableitbar → im Erstkontakt prüfen.
+              <div className="mt-3 rounded-md border border-terminal-border px-2.5 py-1.5 text-[10px] leading-snug text-phosphor-dimtext">
+                ✓ belegt · — geprüft, nicht zutreffend · ? nicht prüfbar → Erstkontakt. Konkreter Anlass
+                (Launch/Event/Recruiting) ist nicht aus Scan-Daten ableitbar.
               </div>
             </div>
           )}

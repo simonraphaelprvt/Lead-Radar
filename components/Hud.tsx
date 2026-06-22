@@ -1,19 +1,15 @@
 "use client";
 
 import ViewSwitcher, { type AppView } from "./ViewSwitcher";
-import { PAIN_COLOR } from "./Badges";
 
 interface HudProps {
   view: AppView;
   onViewChange: (v: AppView) => void;
   scanned: number;
-  hot: number;
-  warm: number;
-  cold: number;
+  inNeed: number;
+  interested: number;
+  common: number;
   raus: number;
-  painHoch: number;
-  painMittel: number;
-  painNiedrig: number;
   pipeline: number;
   scanning: boolean;
 }
@@ -37,21 +33,6 @@ function Stat({
   );
 }
 
-/** Pain-Match-Gruppe: drei Werte unter einem Label, abgesetzt vom Einstufungs-Block. */
-function PainGroup({ hoch, mittel, niedrig }: { hoch: number; mittel: number; niedrig: number }) {
-  return (
-    <div className="ml-1 flex flex-col justify-center border-l border-terminal-border pl-3.5">
-      <div className="text-[9px] tracking-wide text-phosphor-muted">PAIN-MATCH</div>
-      <div className="flex items-center gap-2 font-mono text-[15px] font-semibold tabular-nums leading-none">
-        <span style={{ color: PAIN_COLOR.hoch }} title="Pain-Match Hoch">{hoch}</span>
-        <span className="text-[10px] text-phosphor-dimtext">/</span>
-        <span style={{ color: PAIN_COLOR.mittel }} title="Pain-Match Mittel">{mittel}</span>
-        <span className="text-[10px] text-phosphor-dimtext">/</span>
-        <span style={{ color: PAIN_COLOR.niedrig }} title="Pain-Match Niedrig">{niedrig}</span>
-      </div>
-    </div>
-  );
-}
 
 export default function Hud(props: HudProps) {
   return (
@@ -73,11 +54,10 @@ export default function Hud(props: HudProps) {
 
       <div className="flex items-center">
         <Stat label="GESCANNT" value={props.scanned} />
-        <Stat label="HOT" value={props.hot} color="var(--hot)" />
-        <Stat label="WARM" value={props.warm} color="var(--warm)" />
-        <Stat label="COLD" value={props.cold} color="var(--cold)" />
+        <Stat label="IN NEED" value={props.inNeed} color="var(--in-need)" />
+        <Stat label="INTERESTED" value={props.interested} color="var(--interested)" />
+        <Stat label="COMMON" value={props.common} color="var(--common)" />
         <Stat label="RAUS" value={props.raus} color="var(--dim)" />
-        <PainGroup hoch={props.painHoch} mittel={props.painMittel} niedrig={props.painNiedrig} />
         <Stat label="PIPELINE" value={props.pipeline} color="var(--accent)" />
       </div>
 

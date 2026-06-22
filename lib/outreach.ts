@@ -253,7 +253,7 @@ export function buildUserPrompt(lead: Lead): string {
         ? "Instagram: kein Account gefunden"
         : "Instagram: nicht geprüft",
     typeof lead.rating === "number" ? `Google-Bewertung: ${lead.rating} bei ${lead.reviewCount ?? 0} Bewertungen` : "",
-    `Bewertung als Lead: ${lead.einstufung} (Tier ${lead.tier}, Substanz ${lead.substanzScore}/100)`,
+    `Bewertung als Lead: ${lead.einstufung.replace("_", " ")} (Tier ${lead.tier}, final ${lead.finalScore}/100, Bedarf ${lead.needScore})`,
     "",
     "Schreibe die Content-Idee so spezifisch wie möglich für genau dieses Business.",
   ].filter(Boolean);

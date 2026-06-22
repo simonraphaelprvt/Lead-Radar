@@ -18,7 +18,7 @@ export interface ScanResult {
   errors: string[];
 }
 
-const EINSTUFUNG_RANK: Record<Einstufung, number> = { HOT: 0, WARM: 1, COLD: 2, RAUS: 3 };
+const EINSTUFUNG_RANK: Record<Einstufung, number> = { IN_NEED: 0, INTERESTED: 1, COMMON: 2, RAUS: 3 };
 
 function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
@@ -54,29 +54,29 @@ function toLead(s: BusinessSignals, opts?: QualifyOptions): Lead {
     einstufung: q.einstufung,
     tier: q.tier,
     tierCOnHold: q.tier_c_on_hold,
-    substanzScore: q.substanz_score,
-    painMatch: q.pain_match,
+    payScore: q.pay_score,
+    needScore: q.need_score,
+    fitScore: q.fit_score,
+    painMatchScore: q.pain_match_score,
+    finalScore: q.final_score,
+    painSignals: q.pain_signals,
     koAusgeschlossen: q.ko_ausgeschlossen,
     koGrund: q.ko_grund,
     empfehlung: q.empfehlung,
     begruendungKurz: q.begruendung_kurz,
-    substanz: {
-      finanzielle: q.scrapebare_bewertung.finanzielle_substanz,
-      visuell: q.scrapebare_bewertung.visuell_darstellbar,
-      schmerz: q.scrapebare_bewertung.schmerzpunkt,
-    },
+    achsen: { pay: q.pay, need: q.need, fit: q.fit },
     erstkontakt: q.im_erstkontakt_pruefen,
     indeedFlag: false,
   };
 }
 
-/** Sortierung: HOT > WARM > COLD > RAUS; Tier-C/on_hold nach hinten; dann Substanz. */
+/** Sortierung: IN_NEED > INTERESTED > COMMON > RAUS; off-profile nach hinten; dann final_score. */
 function sortLeads(leads: Lead[]): Lead[] {
   return [...leads].sort((a, b) => {
     const r = EINSTUFUNG_RANK[a.einstufung] - EINSTUFUNG_RANK[b.einstufung];
     if (r !== 0) return r;
     if (a.tierCOnHold !== b.tierCOnHold) return a.tierCOnHold ? 1 : -1;
-    return b.substanzScore - a.substanzScore;
+    return b.finalScore - a.finalScore;
   });
 }
 

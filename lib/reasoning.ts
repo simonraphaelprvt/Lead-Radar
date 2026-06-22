@@ -1,14 +1,22 @@
 // ====================================================================
-// LEAD REASONING ENGINE v2  (das Herzstueck, signalbasiert)
+// LEAD REASONING ENGINE v3  (Oberindikator: IN NEED / INTERESTED / COMMON)
 // --------------------------------------------------------------------
-// Kernregel (NICHT wegoptimieren): Es ist ein Signal-Problem, kein
-// Reasoning-Problem. Die Engine bewertet AUSSCHLIESSLICH Signale, die real
-// in den Daten stehen. Alles andere wird als "im Erstkontakt pruefen"
-// (Status "unbekannt") ausgegeben und NIE gescort. Kein Feld wird
-// geschaetzt, geraten oder erfunden.
+// Kernregel (NICHT wegoptimieren): Es ist ein Signal-Problem. Die Engine
+// bewertet AUSSCHLIESSLICH Signale, die real in den Daten stehen. Alles
+// andere wird als "im Erstkontakt pruefen" ausgegeben und NIE gescort.
+// Kein Feld wird geschaetzt, geraten oder erfunden.
 //
-// Pipeline: 1) KO-Filter -> 2) Substanz-Score (nur scrapebare Signale)
-//           -> 3) Tier (aus Kategorie) -> 4) HOT/WARM/COLD -> 5) Output.
+// Pipeline pro Business:
+//   1) KO-Filter (ein Treffer -> RAUS)
+//   2) pay_score / need_score / fit_score (Rohachsen, 0..100)
+//   3) Pain-Signale: jedes einzeln, an einem konkreten Datenpunkt belegt
+//      -> pain_match_score (gewichtete Summe der GEFUNDENEN Signale)
+//   4) Verrechnung:
+//        zwischen = need * (0.5 + 0.5 * pain/100)        (Pain verstaerkt Need)
+//        final    = zwischen * (0.3 + 0.7 * pay/100)      (Pay als Gate+Multipl.)
+//      fit < Gate -> max COMMON.
+//   5) EINZIGER Oberindikator: IN_NEED / INTERESTED / COMMON (+ RAUS via KO).
+//      Rohwerte wandern in Liste/Detail, NICHT auf die Karte.
 // ====================================================================
 
 // ====================================================================
@@ -18,24 +26,17 @@ export const REASONING_CONFIG = {
   MIN_REVIEWS_ALLGEMEIN: 15,
   MIN_REVIEWS_AUTO_OHNE_MARKE: 30,
   MIN_RATING: 3.8,
-  // "wenige Reviews" fuer die Rating-KO-Regel (schwaches Rating + wenig Volumen)
   WENIGE_REVIEWS: 20,
 
-  // Substanz-Schwellen fuer HOT / WARM (0..100)
-  SUBSTANZ_HOT: 80,
-  SUBSTANZ_WARM_MIN: 45,
-
-  // Review-Volumen-Skalierung fuer die finanzielle Substanz. Weniger gesaettigt:
-  // erst hohe Reviewzahlen erreichen Top-Werte -> etablierte Betriebe heben sich
-  // klar von der Masse ab (Kalibrierung Simon: HOT strenger).
+  // Review-Volumen-Skalierung als Groessen-/Etabliertheits-Proxy.
   REVIEW_SCALE_MIN: 20, // <= ergibt 0
   REVIEW_SCALE_MAX: 300, // >= ergibt 100
 
-  // Gewichte INNERHALB der finanziellen Substanz (Reviews staerker gewichtet).
-  FIN_WEIGHTS: { marke: 0.2, reviews: 0.4, preis: 0.1, domain: 0.2, fotos: 0.1 },
+  // Ab wievielen Reviews gilt ein Betrieb als "etabliert" (fuer Pain-Signal
+  // 'etabliert aber unsichtbar').
+  ETABLIERT_REVIEWS: 80,
 
-  // Fast-Food / Imbiss / Doener: HARTE KO (Entscheidung Simon). Erkennung ueber
-  // das echte Google-Signal primaryType, plus eindeutige Namensbegriffe.
+  // Fast-Food / Imbiss / Doener: HARTE KO.
   FAST_FOOD_TYPES: ["fast_food_restaurant", "meal_takeaway", "meal_delivery"],
   FAST_FOOD_NAMEN: [
     "doener", "döner", "imbiss", "kebab", "kebap", "duerum", "dürüm",
@@ -43,14 +44,10 @@ export const REASONING_CONFIG = {
     "pizza-taxi", "pizzaservice", "pizzabringdienst",
   ],
 
-  // Auto: echte Vertragsmarke (Premium zaehlt staerker, siehe PREMIUM_AUTO_MARKEN)
   PREMIUM_AUTO_MARKEN: [
     "Porsche", "Mercedes", "Mercedes-Benz", "Audi", "BMW",
     "Volkswagen Zentrum", "Jaguar", "Land Rover", "Volvo", "Lexus", "Tesla",
   ],
-  // ANNAHME (gekennzeichnet): "Vertragsmarke" != nur Premium. Diese Marken im
-  // Namen heben das Auto ueber die "Mini-Autohuette"-Schwelle, zaehlen aber
-  // schwaecher als Premium.
   VERTRAGS_AUTO_MARKEN: [
     "Volkswagen", "VW", "Opel", "Ford", "Toyota", "Renault", "Peugeot",
     "Citroen", "Skoda", "Seat", "Hyundai", "Kia", "Mazda", "Nissan",
@@ -68,41 +65,79 @@ export const REASONING_CONFIG = {
     "Hausverwaltung", "Inkasso",
   ],
 
-  // ANNAHME (gekennzeichnet): Hosts, die KEINE eigene Website sind (= Aggregator).
   AGGREGATOR_HOSTS: [
     "mobile.de", "autoscout24", "facebook.com", "fb.com", "instagram.com",
     "linktr.ee", "google.com", "business.site", "yelp.", "11880.com",
     "gelbeseiten", "das-oertliche", "tripadvisor",
   ],
 
-  // --- PAIN-MATCH (zweite Achse) -----------------------------------
-  // Zweite Bewertungsachse NEBEN der Einstufung. Misst, wie VIEL ein Lead
-  // als Retainer wert ist und ob er durch Simons Content-Leistung loesbar
-  // ist - AUSSCHLIESSLICH aus real vorhandenen Signalen. Kapital ist der
-  // Kern (Preislevel, Groesse via Review-Volumen, Auto-Marke, Branche).
-  // Der konkrete ANLASS (Launch/Event/Recruiting) steht NICHT in Places-
-  // Daten -> bleibt "unbekannt" (Erstkontakt), wird NIE erfunden.
-  PAIN_MATCH: {
-    KAPITAL_HOCH: 65, // Kapital-Score (0..100) ab hier "hoch"
-    KAPITAL_MITTEL: 40, // ab hier "mittel"
-    LOESBAR_MIN: 45, // visuell-darstellbar-Score, ab dem es durch Content loesbar ist
-    // Review-Volumen als Groessen-/Kapital-Proxy
-    KAPITAL_REVIEW_MIN: 30, // <= ergibt 0
-    KAPITAL_REVIEW_MAX: 400, // >= ergibt 100
-    // Gewichte INNERHALB des Kapital-Scores (ueber vorhandene renormiert)
-    WEIGHTS: { preis: 0.35, groesse: 0.35, marke: 0.15, branche: 0.15 },
-  },
+  // --- ZAHLUNGSKRAFT (pay_score) : Branchen-Startwerte ---------------
+  // pay_score = Branchen-Basis gemischt mit Preislevel + Groesse (Reviews).
+  PAY_BRANCHE_HOCH: [
+    "autohaus", "car_dealer", "kfz", "zahnarzt", "dentist", "arzt", "praxis",
+    "klinik", "anwalt", "lawyer", "kanzlei", "steuer", "immobilien", "estate",
+    "hotel", "resort", "lodging", "nachtclub", "diskothek", "club", "bau",
+    "kosmetik", "beauty", "spa", "moebel", "möbel", "kuechen", "küchen",
+    "maschinenbau", "ingenieur", "premium",
+  ],
+  PAY_BRANCHE_MITTEL: [
+    "restaurant", "gastro", "cafe", "café", "bar", "friseur", "boutique",
+    "mode", "fitness", "studio", "event", "location", "physio", "yoga",
+    "tattoo", "eventlocation",
+  ],
+  PAY_BRANCHE_NIEDRIG: [
+    "imbiss", "doener", "döner", "kiosk", "spaeti", "späti", "baeckerei",
+    "bäckerei", "snack",
+  ],
+  PAY_BASE: { hoch: 88, mittel: 58, niedrig: 25, default: 45 },
 
-  // Branchen-Kapitalintensitaet (immer aus Kategorie ableitbar -> Default-Signal).
-  KAPITAL_BRANCHE_HOCH: [
-    "hotel", "resort", "lodging", "autohaus", "car_dealer", "kfz",
-    "immobilien", "estate", "maschinenbau", "klinik", "zahnarzt", "dentist",
-    "bauunternehmen", "moebel", "möbel", "kuechen", "küchen", "ingenieur", "spa",
+  // --- FIT (fit_score) : Passung zu Simons Kernbranchen ---------------
+  // Kern: Gastronomie, Automotive, Nightlife, Fitness, Hospitality.
+  FIT_CORE: [
+    "restaurant", "gastro", "cafe", "café", "bar", "hotel", "resort", "lodging",
+    "nachtclub", "diskothek", "club", "fitness", "studio", "autohaus", "auto",
+    "car_dealer", "kfz", "event", "location", "spa", "eventlocation",
   ],
-  KAPITAL_BRANCHE_MITTEL: [
-    "restaurant", "gastro", "bar", "fitness", "studio", "beauty", "kosmetik",
-    "friseur", "praxis", "physio", "yoga", "event", "location", "tattoo",
+  FIT_ADJACENT: [
+    "beauty", "kosmetik", "friseur", "immobilien", "estate", "boutique", "mode",
+    "einzelhandel", "retail", "praxis", "zahnarzt", "dentist", "tattoo",
+    "moebel", "möbel", "kuechen", "küchen", "physio", "yoga",
   ],
+  FIT_OFF: [
+    "versicherung", "steuer", "anwalt", "lawyer", "kanzlei", "software", "saas",
+    "edv", "b2b", "recruiting", "consulting", "inkasso", "hausverwaltung",
+    "accounting", "ingenieur", "maschinenbau",
+  ],
+  FIT_BASE: { core: 92, adjacent: 62, off: 22, default: 45 },
+  FIT_GATE: 40, // fit darunter -> maximal COMMON
+
+  // --- NEED (need_score) : grobe, branchenbasierte Bedarfssignale -----
+  NEED_BASE: 45,
+  NEED_KEINE_WEBSITE: 30, // own domain fehlt
+  NEED_ETABLIERT_UNSICHTBAR: 10,
+  NEED_REINE_DIENSTLEISTUNG: -15,
+
+  // --- PAIN-SIGNALE : Gewichtspunkte je gefundenem Signal -------------
+  PAIN_WEIGHTS: { hoch: 45, mittel: 25, niedrig: 12 } as Record<PainWeight, number>,
+  // Tage ohne Instagram-Post, ab denen "inaktiv" gilt.
+  IG_INAKTIV_TAGE: 75,
+
+  // Branchen mit bekanntem Fachkraeftemangel (mittleres Pain-Gewicht).
+  FACHKRAEFTEMANGEL_BRANCHE: [
+    "gastro", "restaurant", "cafe", "café", "bar", "hotel", "pflege", "klinik",
+    "handwerk", "bau", "bauunternehmen", "friseur", "kfz", "elektro", "sanitaer",
+    "sanitär",
+  ],
+  // Produkt-/verkaufsbasierte Branchen (brauchen Sichtbarkeit fuers Produkt).
+  PRODUKT_BRANCHE: [
+    "autohaus", "car_dealer", "kfz", "boutique", "mode", "einzelhandel",
+    "retail", "moebel", "möbel", "kuechen", "küchen", "immobilien", "estate",
+    "e-commerce", "shop",
+  ],
+
+  // --- OBERINDIKATOR-SCHWELLEN (scharf) -------------------------------
+  IN_NEED: { FINAL: 65, PAY: 65, FIT: 60 }, // + >=1 belegtes High-Weight-Pain
+  INTERESTED: { FINAL: 40, FIT: 50 },
 } as const;
 
 // ====================================================================
@@ -112,50 +147,61 @@ export const REASONING_CONFIG = {
 /** Normalisierte, REAL vorhandene Signale eines Business. null/undefined = unbekannt. */
 export interface BusinessSignals {
   name: string;
-  /** Menschenlesbare Kategorie (z.B. "Autohaus", "Hotel"). */
   categoryLabel: string;
-  /** Optionale interne Kategorie-id (aus categories.ts), wenn vorhanden. */
   categoryId?: string;
-  /** Rohe Typ-Strings (z.B. Google place types) zur Tier/Visuell-Ableitung. */
   types?: string[];
 
   rating?: number | null;
   reviewCount?: number | null;
-  /** 0..4 (Google PRICE_LEVEL_*). null = unbekannt. */
   priceLevel?: number | null;
   photoCount?: number | null;
 
   website?: string | null;
-  /** Verlinkter Social-Account bekannt? true/false = geprueft, null = unbekannt. */
   hasSocial?: boolean | null;
 
   phone?: string | null;
   address?: string | null;
   lat?: number;
   lng?: number;
+
+  // ---- Enrichment (Layer 2, optional; server-seitig befuellt) ----
+  /** Website per Fetch erreichbar? null/undefined = nicht geprueft. */
+  siteReachable?: boolean | null;
+  siteHttps?: boolean | null;
+  /** viewport-Meta vorhanden (Indiz fuer responsive)? */
+  siteResponsive?: boolean | null;
+  /** erkannter Baukasten (wix/jimdo/...) oder null. */
+  siteBuilder?: string | null;
+  /** Auf der Website verlinktes Instagram-Handle (ohne @) oder null. */
+  instagramHandle?: string | null;
+  /** Instagram ueberhaupt geprueft (Website gefetcht)? */
+  igChecked?: boolean;
+  /** Tage seit letztem Instagram-Post; null = nicht ermittelbar. */
+  igLastPostDaysAgo?: number | null;
 }
 
 export type Tier = "A" | "B" | "C";
-export type Einstufung = "HOT" | "WARM" | "COLD" | "RAUS";
+/** EINZIGER Oberindikator (Karte). RAUS kommt aus dem KO-Filter. */
+export type Einstufung = "IN_NEED" | "INTERESTED" | "COMMON" | "RAUS";
 export type Empfehlung = "kontaktieren" | "spaeter" | "raus";
 export type CheckStatus = "unbekannt";
 
-/** Zweite Achse: wie viel ist der Lead als Retainer wert + ist er loesbar. */
-export type PainMatch = "hoch" | "mittel" | "niedrig";
+export type PainWeight = "hoch" | "mittel" | "niedrig";
 
-export interface PainMatchResult {
-  level: PainMatch;
-  /** Kapital-Einschaetzung 0..100 (Kern der Achse). */
-  kapital_score: number;
-  /** Treibende Kapital-Signale (real vorhanden). */
-  kapital_signale: string[];
-  /** Durch Simons Content-Leistung loesbar (aus visuell-darstellbar). */
-  loesbar: boolean;
-  /** Konkreter Anlass/Phase nicht aus Scan-Daten ableitbar -> Erstkontakt. */
-  anlass_status: "unbekannt";
-  begruendung: string;
+/** Ein einzeln geprueftes Pain-Signal, an einem konkreten Datenpunkt belegt. */
+export interface PainSignal {
+  key: string;
+  label: string;
+  weight: PainWeight;
+  /** gefunden = Punkt vergeben. */
+  found: boolean;
+  /** war das Signal aus den Daten ueberhaupt pruefbar? false -> Erstkontakt. */
+  pruefbar: boolean;
+  /** konkreter Datenpunkt (Beleg) bzw. warum nicht pruefbar. */
+  beleg: string;
 }
 
+/** Eine Rohachse mit Score + treibenden Signalen. */
 export interface Teilscore {
   score: number;
   signale: string[];
@@ -165,18 +211,26 @@ export interface Teilscore {
 export interface QualifiedLead {
   name: string;
   tier: Tier;
+  /** Off-Profil (fit unter Gate) -> deutlich zurueckgestuft. */
   tier_c_on_hold: boolean;
+  /** EINZIGER Oberindikator. */
   einstufung: Einstufung;
-  substanz_score: number;
-  /** Zweite Achse: Kapital x Loesbarkeit (neben der Einstufung). */
-  pain_match: PainMatchResult;
+
+  // Rohachsen (0..100) - Begruendung, wandern in Liste/Detail.
+  pay_score: number;
+  need_score: number;
+  fit_score: number;
+  pain_match_score: number;
+  final_score: number;
+
+  pay: Teilscore;
+  need: Teilscore;
+  fit: Teilscore;
+  /** Jedes Pain-Signal einzeln (gefunden/nicht/ nicht pruefbar) mit Beleg. */
+  pain_signals: PainSignal[];
+
   ko_ausgeschlossen: boolean;
   ko_grund: string | null;
-  scrapebare_bewertung: {
-    finanzielle_substanz: Teilscore;
-    visuell_darstellbar: Teilscore;
-    schmerzpunkt: Teilscore;
-  };
   im_erstkontakt_pruefen: {
     entscheider_erreichbar: CheckStatus;
     gesicht_zeigen: CheckStatus;
@@ -200,16 +254,14 @@ function nameContainsAny(name: string, list: readonly string[]): string | null {
   return null;
 }
 
-/** Volles Heuhaufen inkl. Google-Typen (fuer Auto/Visuell). */
 function categoryHay(s: BusinessSignals): string {
   return norm([s.categoryLabel, s.categoryId ?? "", ...(s.types ?? [])].join(" "));
 }
-
-/** NUR das saubere categoryLabel/categoryId - ohne verrauschte Google-Typen.
- *  Fuer das Tier-Matching, damit Typen wie "sports_activity_location" nicht
- *  faelschlich TIER_A-Keywords ("location") treffen. */
 function labelHay(s: BusinessSignals): string {
   return norm([s.categoryLabel, s.categoryId ?? ""].join(" "));
+}
+function hayHasAny(hay: string, list: readonly string[]): boolean {
+  return list.some((k) => hay.includes(norm(k)));
 }
 
 function isChain(s: BusinessSignals): string | null {
@@ -217,15 +269,10 @@ function isChain(s: BusinessSignals): string | null {
 }
 
 function isAnkerlosDienstleistung(s: BusinessSignals): string | null {
-  // Sowohl im Namen als auch in der Kategorie pruefen (OSM kennt diese
-  // Kategorien teils nicht -> Name faengt sie ab).
   const inName = nameContainsAny(s.name, C.DIENSTLEISTUNG_OHNE_ANKER);
   if (inName) return inName;
   const hay = categoryHay(s);
-  for (const term of C.DIENSTLEISTUNG_OHNE_ANKER) {
-    if (hay.includes(norm(term))) return term;
-  }
-  // Google-Typen fuer Anker-lose Dienstleistung
+  for (const term of C.DIENSTLEISTUNG_OHNE_ANKER) if (hay.includes(norm(term))) return term;
   const TYPE_HINT = ["insurance_agency", "accounting", "lawyer", "finance"];
   for (const t of TYPE_HINT) if (hay.includes(t)) return t;
   return null;
@@ -245,7 +292,6 @@ function isAuto(s: BusinessSignals): boolean {
   );
 }
 
-/** "premium" | "vertrag" | null  -- nur aus dem Namen, kein Raten. */
 function autoMarke(s: BusinessSignals): "premium" | "vertrag" | null {
   if (nameContainsAny(s.name, C.PREMIUM_AUTO_MARKEN)) return "premium";
   if (nameContainsAny(s.name, C.VERTRAGS_AUTO_MARKEN)) return "vertrag";
@@ -271,8 +317,10 @@ function hasOwnDomain(url?: string | null): boolean | null {
 
 const clamp = (n: number, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, n));
 const round = (n: number) => Math.round(n);
+function scaleReviews(reviews: number, min: number, max: number): number {
+  return clamp(((reviews - min) / (max - min)) * 100);
+}
 
-/** Optionen, die einzelne KO-Regeln umschaltbar machen (z.B. Ketten-Filter). */
 export interface QualifyOptions {
   /** Ketten/Filialen als KO ausschliessen. Default true. */
   filterChains?: boolean;
@@ -282,40 +330,32 @@ export interface QualifyOptions {
 // STUFE 1: KO-FILTER  (harte Ausschluesse, ein Treffer -> RAUS)
 // ====================================================================
 export function runKO(s: BusinessSignals, opts?: QualifyOptions): string | null {
-  // 1) Kette (umschaltbar)
   if (opts?.filterChains !== false) {
     const chain = isChain(s);
     if (chain) return `Kette/Filiale erkannt ("${chain}") - kein lokales Budget, langer Entscheidungsweg`;
   }
-
-  // 1b) Fast-Food / Imbiss / Doener (harte KO, Entscheidung Simon)
   const ff = isFastFood(s);
   if (ff) return `Fast-Food/Imbiss erkannt ("${ff}") - niedrige Zahlungskraft, kein Retainer-Budget`;
 
-  // 2) Anker-lose Dienstleistung
   const anker = isAnkerlosDienstleistung(s);
   if (anker) return `Dienstleistung ohne visuellen Anker ("${anker}") - kein Content-Material`;
 
-  // 3) Auto-Spezialfall ZUERST (strenger als die Allgemein-Regel)
   if (isAuto(s)) {
     const marke = autoMarke(s);
     const reviews = s.reviewCount;
     if (!marke && typeof reviews === "number" && reviews < C.MIN_REVIEWS_AUTO_OHNE_MARKE) {
       return `keine Vertragsmarke und unter ${C.MIN_REVIEWS_AUTO_OHNE_MARKE} Reviews (${reviews}) - Mini-Autohuette`;
     }
-    // Ohne Marke UND ohne bekannte Reviewzahl + ohne eigene Website = ebenfalls raus
     if (!marke && reviews == null && hasOwnDomain(s.website) !== true) {
       return "keine Vertragsmarke, keine Reviewzahl und keine eigene Website - keine Substanz";
     }
   }
 
-  // 4) Keine Website UND wenige Reviews
-  const hasWeb = hasOwnDomain(s.website) === true; // Aggregator zaehlt NICHT als Website
+  const hasWeb = hasOwnDomain(s.website) === true;
   if (!hasWeb && typeof s.reviewCount === "number" && s.reviewCount < C.MIN_REVIEWS_ALLGEMEIN) {
     return `keine eigene Website und unter ${C.MIN_REVIEWS_ALLGEMEIN} Reviews (${s.reviewCount}) - keine Substanz`;
   }
 
-  // 5) Schwaches Rating bei gleichzeitig wenig Volumen
   if (
     typeof s.rating === "number" &&
     s.rating < C.MIN_RATING &&
@@ -324,365 +364,316 @@ export function runKO(s: BusinessSignals, opts?: QualifyOptions): string | null 
   ) {
     return `Rating ${s.rating} unter ${C.MIN_RATING} bei nur ${s.reviewCount} Reviews - schwaches Geschaeft`;
   }
-
   return null;
 }
 
 // ====================================================================
-// STUFE 2: SUBSTANZ-SCORE  (nur scrapebare Signale, 0..100)
-// --------------------------------------------------------------------
-// Jeder Teil scort NUR vorhandene Signale. Fehlende Signale fliessen NICHT
-// in die Wertung ein (Gewichte werden ueber die vorhandenen renormiert).
+// STUFE 2: ROHACHSEN  pay / need / fit  (0..100)
 // ====================================================================
 
-interface SubSignal {
-  key: string;
-  weight: number;
-  value: number | null; // null = unbekannt -> nicht werten
-  label: string; // fuer signale[]
-}
+/** Zahlungskraft: Branchen-Basis gemischt mit Preislevel + Groesse (Reviews). */
+function scorePay(s: BusinessSignals): Teilscore {
+  const hay = categoryHay(s);
+  let base: number = C.PAY_BASE.default;
+  let label = "Branche neutral";
+  if (hayHasAny(hay, C.PAY_BRANCHE_HOCH)) { base = C.PAY_BASE.hoch; label = "kapitalstarke Branche"; }
+  else if (hayHasAny(hay, C.PAY_BRANCHE_NIEDRIG)) { base = C.PAY_BASE.niedrig; label = "kapitalschwache Branche"; }
+  else if (hayHasAny(hay, C.PAY_BRANCHE_MITTEL)) { base = C.PAY_BASE.mittel; label = "mittlere Branchen-Kapitalkraft"; }
 
-function weightedPresent(subs: SubSignal[]): { score: number; signale: string[]; unbekannt: string[] } {
-  const present = subs.filter((x) => x.value != null);
-  const signale: string[] = [];
-  const unbekannt: string[] = [];
-  for (const x of subs) {
-    if (x.value == null) unbekannt.push(x.key);
-    else signale.push(`${x.label} (${round(x.value)})`);
-  }
-  if (present.length === 0) return { score: 50, signale, unbekannt }; // nichts bekannt -> neutral
-  const wSum = present.reduce((a, x) => a + x.weight, 0);
-  const score = present.reduce((a, x) => a + x.weight * (x.value as number), 0) / wSum;
-  return { score: round(clamp(score)), signale, unbekannt };
-}
-
-function scoreFinanzielleSubstanz(s: BusinessSignals): Teilscore {
-  const subs: SubSignal[] = [];
-
-  const W = C.FIN_WEIGHTS;
-
-  // Marke (nur bei Auto ein echtes Signal; sonst nicht anwendbar -> unbekannt)
+  // Auto-Marke hebt die Basis (Premium > Vertrag).
   if (isAuto(s)) {
     const m = autoMarke(s);
-    subs.push({
-      key: "marke",
-      weight: W.marke,
-      value: m === "premium" ? 100 : m === "vertrag" ? 65 : 0,
-      label: m === "premium" ? "Premium-Marke" : m === "vertrag" ? "Vertragsmarke" : "keine Marke",
-    });
+    if (m === "premium") { base = Math.max(base, 92); label = "Premium-Automarke"; }
+    else if (m === "vertrag") { base = Math.max(base, 75); label = "Vertrags-Automarke"; }
   }
 
-  // Review-Anzahl: REVIEW_SCALE_MIN -> 0, REVIEW_SCALE_MAX -> 100 (weniger gesaettigt)
-  const rMin = C.REVIEW_SCALE_MIN;
-  const rMax = C.REVIEW_SCALE_MAX;
-  subs.push({
-    key: "reviews",
-    weight: W.reviews,
-    value: typeof s.reviewCount === "number" ? clamp(((s.reviewCount - rMin) / (rMax - rMin)) * 100) : null,
-    label: `${s.reviewCount ?? "?"} Reviews`,
-  });
-
-  // Preislevel 0..4 -> 0..100
-  subs.push({
-    key: "preis",
-    weight: W.preis,
-    value: typeof s.priceLevel === "number" ? clamp((s.priceLevel / 4) * 100) : null,
-    label: `Preislevel ${s.priceLevel ?? "?"}`,
-  });
-
-  // Eigene Domain vs Aggregator
-  const own = hasOwnDomain(s.website);
-  subs.push({
-    key: "domain",
-    weight: W.domain,
-    value: own == null ? null : own ? 100 : 20,
-    label: own == null ? "Website unbekannt" : own ? "eigene Domain" : "nur Aggregator-Link",
-  });
-
-  // Anzahl Fotos: 0 -> 0, 10+ -> 100 (Foto-Anzahl ist gedeckelt -> geringes Gewicht)
-  subs.push({
-    key: "fotos",
-    weight: W.fotos,
-    value: typeof s.photoCount === "number" ? clamp((s.photoCount / 10) * 100) : null,
-    label: `${s.photoCount ?? "?"} Fotos`,
-  });
-
-  const { score, signale, unbekannt } = weightedPresent(subs);
-  const begruendung =
-    `Getrieben durch: ${signale.join(", ") || "keine harten Signale"}.` +
-    (unbekannt.length ? ` Unbekannt (nicht gewertet): ${unbekannt.join(", ")}.` : "");
-  return { score, signale, begruendung };
+  const parts: { w: number; v: number }[] = [{ w: 0.5, v: base }];
+  const signale: string[] = [label];
+  if (typeof s.priceLevel === "number") {
+    parts.push({ w: 0.3, v: clamp((s.priceLevel / 4) * 100) });
+    signale.push(`Preislevel ${s.priceLevel}`);
+  }
+  if (typeof s.reviewCount === "number") {
+    parts.push({ w: 0.2, v: scaleReviews(s.reviewCount, C.REVIEW_SCALE_MIN, C.REVIEW_SCALE_MAX) });
+    signale.push(`${s.reviewCount} Reviews`);
+  }
+  const wSum = parts.reduce((a, p) => a + p.w, 0);
+  const score = round(clamp(parts.reduce((a, p) => a + p.w * p.v, 0) / wSum));
+  return { score, signale, begruendung: `Zahlungskraft aus ${signale.join(", ")}.` };
 }
 
-// Visuell darstellbar: rein aus Kategorie/Typ ableitbar (immer vorhanden).
-const VISUELL_HOCH = ["hotel", "resort", "event", "location", "restaurant", "gastro",
-  "bar", "cafe", "club", "spa", "beauty", "kosmetik", "studio", "fitness",
-  "friseur", "autohaus", "car_dealer", "lodging", "tourism"];
 const VISUELL_NIEDRIG = ["versicherung", "steuer", "kanzlei", "lawyer", "insurance",
   "accounting", "callcenter", "inkasso", "hausverwaltung", "consulting",
   "software", "saas", "edv", "agentur"];
 
-function scoreVisuell(s: BusinessSignals): Teilscore {
+/** Bedarf (grob, branchenbasiert): fehlende/aggregierte Website + etabliert-unsichtbar. */
+function scoreNeed(s: BusinessSignals): Teilscore {
+  let score = C.NEED_BASE;
+  const signale: string[] = [];
+  const own = hasOwnDomain(s.website);
+  if (own !== true) {
+    score += C.NEED_KEINE_WEBSITE;
+    signale.push(own === false ? "nur Aggregator-Link" : "keine eigene Website");
+    if (typeof s.reviewCount === "number" && s.reviewCount >= C.ETABLIERT_REVIEWS) {
+      score += C.NEED_ETABLIERT_UNSICHTBAR;
+      signale.push(`etabliert (${s.reviewCount} Reviews) aber unsichtbar`);
+    }
+  } else {
+    signale.push("eigene Website vorhanden");
+  }
+  if (hayHasAny(categoryHay(s), VISUELL_NIEDRIG)) {
+    score += C.NEED_REINE_DIENSTLEISTUNG;
+    signale.push("reine Dienstleistung (geringerer Content-Bedarf)");
+  }
+  return { score: round(clamp(score)), signale, begruendung: `Bedarf aus ${signale.join(", ")}.` };
+}
+
+/** Fit: Passung zu Simons Kernbranchen (rein aus Kategorie). */
+function scoreFit(s: BusinessSignals): Teilscore {
   const hay = categoryHay(s);
-  let score = 55; // neutraler Default
-  let why = "neutral (Kategorie nicht eindeutig)";
-  if (VISUELL_HOCH.some((k) => hay.includes(k))) {
-    score = 88;
-    why = "Raum/Produkt/Erlebnis als Anker vorhanden";
-  } else if (VISUELL_NIEDRIG.some((k) => hay.includes(k))) {
-    score = 28;
-    why = "reine Dienstleistung ohne Raum oder Produkt";
-  }
-  return { score, signale: [s.categoryLabel], begruendung: why };
-}
-
-// Schmerzpunkt: schwaches Signal. Nur "Social-Account verlinkt?" ist scrapebar.
-function scoreSchmerz(s: BusinessSignals): Teilscore {
-  if (s.hasSocial === false) {
-    return {
-      score: 65,
-      signale: ["kein verlinkter Social-Account"],
-      begruendung: "moeglicher Sichtbarkeits-Schmerz (schwaches Signal)",
-    };
-  }
-  if (s.hasSocial === true) {
-    return {
-      score: 35,
-      signale: ["Social-Account vorhanden"],
-      begruendung: "bereits sichtbar (schwaches Signal)",
-    };
-  }
-  return {
-    score: 50,
-    signale: [],
-    begruendung: "Social-Status unbekannt -> neutral, nicht gewertet (schwaches Signal)",
-  };
-}
-
-function combineSubstanz(fin: Teilscore, vis: Teilscore, schmerz: Teilscore): number {
-  return round(clamp(0.5 * fin.score + 0.35 * vis.score + 0.15 * schmerz.score));
+  if (hayHasAny(hay, C.FIT_OFF))
+    return { score: C.FIT_BASE.off, signale: [s.categoryLabel], begruendung: "ausserhalb des Kernprofils (B2B/Kanzlei/Tech)" };
+  if (hayHasAny(hay, C.FIT_CORE))
+    return { score: C.FIT_BASE.core, signale: [s.categoryLabel], begruendung: "Kernbranche (Gastro/Auto/Nightlife/Fitness/Hospitality)" };
+  if (hayHasAny(hay, C.FIT_ADJACENT))
+    return { score: C.FIT_BASE.adjacent, signale: [s.categoryLabel], begruendung: "angrenzende Branche" };
+  return { score: C.FIT_BASE.default, signale: [s.categoryLabel], begruendung: "Branche nicht eindeutig" };
 }
 
 // ====================================================================
-// PAIN-MATCH (zweite Achse): Kapital x Loesbarkeit, nur reale Signale
+// STUFE 3: PAIN-SIGNALE  (jedes einzeln, an einem Datenpunkt belegt)
 // --------------------------------------------------------------------
-// Kapital = wie viel Budget steckt erkennbar dahinter (Preislevel,
-// Groesse via Review-Volumen, Auto-Marke, Branchen-Kapitalintensitaet).
-// Loesbar = laesst sich der Bedarf durch Simons Content abbilden (visuell).
-// Der konkrete Anlass (Launch/Event/Recruiting) ist NICHT scrapebar und
-// bleibt "unbekannt" -> Erstkontakt. Wird nie geraten.
+// Kein Signal aus Vermutung. Ist die Datenlage zu duenn -> pruefbar=false,
+// found=false (kein Punkt), Beleg verweist auf den Erstkontakt.
 // ====================================================================
-
-/** Branchen-Kapitalintensitaet aus der Kategorie (immer ableitbar). */
-function brancheKapital(s: BusinessSignals): { value: number; label: string } {
+function computePainSignals(s: BusinessSignals): PainSignal[] {
+  const own = hasOwnDomain(s.website); // true | false | null
+  const host = websiteHost(s.website);
+  const reviews = s.reviewCount;
+  const reviewsKnown = typeof reviews === "number";
+  const etabliert = reviewsKnown && (reviews as number) >= C.ETABLIERT_REVIEWS;
   const hay = categoryHay(s);
-  if (C.KAPITAL_BRANCHE_HOCH.some((k) => hay.includes(k)))
-    return { value: 85, label: "kapitalintensive Branche" };
-  if (C.KAPITAL_BRANCHE_MITTEL.some((k) => hay.includes(k)))
-    return { value: 55, label: "mittlere Branchen-Kapitalkraft" };
-  return { value: 35, label: "Branche eher kapitalschwach" };
-}
+  const produkt = hayHasAny(hay, C.PRODUKT_BRANCHE);
+  const fachk = hayHasAny(hay, C.FACHKRAEFTEMANGEL_BRANCHE);
 
-function scoreKapital(s: BusinessSignals): { score: number; signale: string[] } {
-  const W = C.PAIN_MATCH.WEIGHTS;
-  const subs: SubSignal[] = [];
+  const sig: PainSignal[] = [];
 
-  // Preislevel: staerkstes direktes Kapital-/Zahlungskraft-Signal
-  subs.push({
-    key: "preis",
-    weight: W.preis,
-    value: typeof s.priceLevel === "number" ? clamp((s.priceLevel / 4) * 100) : null,
-    label: `Preislevel ${s.priceLevel ?? "?"}`,
+  // 1) Keine eigene Website (hoch) - aus Places immer pruefbar.
+  sig.push({
+    key: "keine_website",
+    label: "Keine eigene Website",
+    weight: "hoch",
+    pruefbar: true,
+    found: own !== true,
+    beleg:
+      own === false ? `nur Aggregator-Link (${host ?? "?"})`
+      : own === null ? "kein websiteUri im Google-Profil"
+      : "eigene Domain vorhanden",
   });
 
-  // Review-Volumen als Groessen-/Etabliertheits-Proxy (Kapital folgt Groesse)
-  const kMin = C.PAIN_MATCH.KAPITAL_REVIEW_MIN;
-  const kMax = C.PAIN_MATCH.KAPITAL_REVIEW_MAX;
-  subs.push({
-    key: "groesse",
-    weight: W.groesse,
-    value: typeof s.reviewCount === "number" ? clamp(((s.reviewCount - kMin) / (kMax - kMin)) * 100) : null,
-    label: `Groesse ${s.reviewCount ?? "?"} Reviews`,
+  // 2) Etabliert, aber unsichtbar (hoch).
+  sig.push({
+    key: "etabliert_unsichtbar",
+    label: "Etabliert aber unsichtbar",
+    weight: "hoch",
+    pruefbar: reviewsKnown,
+    found: etabliert && own !== true,
+    beleg: reviewsKnown
+      ? `${reviews} Reviews${own !== true ? ", aber keine eigene Website" : ", Website vorhanden"}`
+      : "Reviewzahl unbekannt",
   });
 
-  // Auto-Marke (nur bei Auto ein echtes Kapital-Signal)
-  if (isAuto(s)) {
-    const m = autoMarke(s);
-    subs.push({
-      key: "marke",
-      weight: W.marke,
-      value: m === "premium" ? 100 : m === "vertrag" ? 65 : 25,
-      label: m === "premium" ? "Premium-Automarke" : m === "vertrag" ? "Vertragsmarke" : "freie Werkstatt",
-    });
+  // 3) Produkt-/Verkaufsgeschaeft ohne Sichtbarkeit (hoch).
+  sig.push({
+    key: "produkt_ohne_sichtbarkeit",
+    label: "Produkt ohne Sichtbarkeit",
+    weight: "hoch",
+    pruefbar: true,
+    found: produkt && own !== true,
+    beleg: produkt
+      ? own !== true ? "Produkt-/Verkaufsgeschaeft ohne eigene Web-Praesenz" : "Produktgeschaeft mit Website"
+      : "kein Produkt-/Verkaufsgeschaeft",
+  });
+
+  // 4) Fachkraeftemangel-Branche (mittel).
+  sig.push({
+    key: "fachkraeftemangel_branche",
+    label: "Fachkraeftemangel-Branche",
+    weight: "mittel",
+    pruefbar: true,
+    found: fachk,
+    beleg: fachk ? "Branche mit bekanntem Fachkraeftemangel" : "Branche ohne typischen Fachkraeftemangel",
+  });
+
+  // 5) Keine Instagram-Praesenz (hoch) - nur pruefbar, wenn Website gefetcht.
+  const igChecked = s.igChecked === true;
+  sig.push({
+    key: "keine_instagram_praesenz",
+    label: "Keine Instagram-Praesenz",
+    weight: "hoch",
+    pruefbar: igChecked,
+    found: igChecked && !s.instagramHandle,
+    beleg: igChecked
+      ? s.instagramHandle ? `Instagram verlinkt (@${s.instagramHandle})` : "Website ohne Instagram-Verlinkung"
+      : "Instagram nicht geprueft (Enrichment aus) -> Erstkontakt",
+  });
+
+  // 6) Instagram inaktiv (hoch) - nur pruefbar mit Last-Post-Datum.
+  const igDays = s.igLastPostDaysAgo;
+  const igDaysKnown = typeof igDays === "number";
+  sig.push({
+    key: "instagram_inaktiv",
+    label: "Instagram inaktiv",
+    weight: "hoch",
+    pruefbar: igDaysKnown,
+    found: igDaysKnown && (igDays as number) > C.IG_INAKTIV_TAGE,
+    beleg: igDaysKnown
+      ? `letzter Post vor ${igDays} Tagen`
+      : "IG-Aktivitaet nicht ermittelbar -> Erstkontakt",
+  });
+
+  // 7) Website veraltet/generisch (niedrig) - nur pruefbar mit Site-Fetch.
+  const siteOk = s.siteReachable === true;
+  const veraltetGruende: string[] = [];
+  if (siteOk) {
+    if (s.siteHttps === false) veraltetGruende.push("kein HTTPS");
+    if (s.siteResponsive === false) veraltetGruende.push("kein responsive-Viewport");
+    if (s.siteBuilder) veraltetGruende.push(`${s.siteBuilder}-Baukasten`);
   }
+  sig.push({
+    key: "website_veraltet",
+    label: "Website veraltet/generisch",
+    weight: "niedrig",
+    pruefbar: siteOk,
+    found: siteOk && veraltetGruende.length > 0,
+    beleg: siteOk
+      ? veraltetGruende.length ? veraltetGruende.join(", ") : "Website wirkt aktuell/responsive"
+      : "Website-Technik nicht geprueft -> Erstkontakt",
+  });
 
-  // Branchen-Kapitalintensitaet (immer vorhanden)
-  const bk = brancheKapital(s);
-  subs.push({ key: "branche", weight: W.branche, value: bk.value, label: bk.label });
-
-  const { score, signale } = weightedPresent(subs);
-  return { score, signale };
+  return sig;
 }
 
-function painMatchEinstufung(kapital: number, loesbar: boolean): PainMatch {
-  const P = C.PAIN_MATCH;
-  // Nicht durch Content loesbar (reine Dienstleistung ohne Raum/Produkt) -> nie hoch.
-  if (!loesbar) return kapital >= P.KAPITAL_HOCH ? "mittel" : "niedrig";
-  if (kapital >= P.KAPITAL_HOCH) return "hoch";
-  if (kapital >= P.KAPITAL_MITTEL) return "mittel";
-  return "niedrig";
+function painScore(signals: PainSignal[]): number {
+  const sum = signals.reduce((a, x) => (x.found ? a + C.PAIN_WEIGHTS[x.weight] : a), 0);
+  return clamp(sum);
 }
-
-function computePainMatch(s: BusinessSignals, visuell: number): PainMatchResult {
-  const { score: kapital, signale } = scoreKapital(s);
-  const loesbar = visuell >= C.PAIN_MATCH.LOESBAR_MIN;
-  const level = painMatchEinstufung(kapital, loesbar);
-  const begruendung =
-    `Kapital ${kapital}/100 (${signale.join(", ") || "keine harten Signale"}); ` +
-    `${loesbar ? "durch Content loesbar" : "kaum durch Content loesbar"}. ` +
-    `Konkreter Anlass/Phase nicht aus Scan-Daten ableitbar -> im Erstkontakt pruefen.`;
-  return {
-    level,
-    kapital_score: kapital,
-    kapital_signale: signale,
-    loesbar,
-    anlass_status: "unbekannt",
-    begruendung,
-  };
+function hasHighWeightPain(signals: PainSignal[]): boolean {
+  return signals.some((x) => x.found && x.weight === "hoch");
 }
 
 // ====================================================================
-// STUFE 3: TIER  (aus Kategorie)
+// STUFE 4: VERRECHNUNG + OBERINDIKATOR
+// ====================================================================
+function verrechnen(pay: number, need: number, pain: number): number {
+  const zwischen = need * (0.5 + 0.5 * (pain / 100));
+  const final = zwischen * (0.3 + 0.7 * (pay / 100));
+  return round(clamp(final));
+}
+
+function einstufen(
+  pay: number, fit: number, final: number, highPain: boolean,
+): Einstufung {
+  if (fit < C.FIT_GATE) return "COMMON"; // fit-Gate: off-profile nie hoch
+  if (final >= C.IN_NEED.FINAL && pay >= C.IN_NEED.PAY && fit >= C.IN_NEED.FIT && highPain) return "IN_NEED";
+  if (final >= C.INTERESTED.FINAL && fit >= C.INTERESTED.FIT) return "INTERESTED";
+  return "COMMON";
+}
+
+// ====================================================================
+// TIER (nur noch fuer Liste/Detail, NICHT mehr Karte)
 // ====================================================================
 const TIER_A = ["hotel", "resort", "event", "location", "restaurant", "gastro",
   "bar", "cafe", "club", "lodging", "conference"];
 const TIER_B = ["beauty", "kosmetik", "friseur", "hairdresser", "fitness", "studio",
   "spa", "yoga", "coach", "physio", "zahnarzt", "dentist", "praxis", "tattoo"];
-// Hinweis: KEINE ultrakurzen Keywords wie "it" -> matcht als Teilstring
-// faelschlich in "f-it-ness". Stattdessen eindeutige Begriffe.
 const TIER_C = ["autohaus", "auto", "car_dealer", "kfz", "anwalt", "lawyer", "kanzlei",
   "steuer", "accounting", "versicherung", "insurance", "immobilien", "estate",
   "maschinenbau", "software", "saas", "edv", "b2b", "ingenieur", "recruiting",
   "bauunternehmen"];
 
 function assignTier(s: BusinessSignals): Tier {
-  const hay = labelHay(s); // nur sauberes Label, keine Google-Typen
-  // Tier B vor A pruefen: lokale Dienstleister (Fitness/Studio/Beauty) gehen
-  // sonst ueber Begriffe wie "studio"/"event" faelschlich nach A.
+  const hay = labelHay(s);
   if (TIER_C.some((k) => hay.includes(k))) return "C";
   if (TIER_B.some((k) => hay.includes(k))) return "B";
   if (TIER_A.some((k) => hay.includes(k))) return "A";
-  return "B"; // unklarer lokaler Dienstleister -> B (nicht A, nicht C)
-}
-
-// ====================================================================
-// STUFE 4: HOT / WARM / COLD
-// --------------------------------------------------------------------
-// Bezieht sich AUSDRUECKLICH nur auf die scrapebaren Dimensionen.
-// Tier C wird nie HOT (Strategie: auf Eis) -> max WARM, on hold, "spaeter".
-// (Aufloesung des Spec-Widerspruchs ueber das Worked Example: Porsche = WARM.)
-// ====================================================================
-function einstufen(tier: Tier, substanz: number): Einstufung {
-  if (tier === "C") {
-    return substanz >= C.SUBSTANZ_WARM_MIN ? "WARM" : "COLD";
-  }
-  if (substanz >= C.SUBSTANZ_HOT) return "HOT";
-  if (substanz >= C.SUBSTANZ_WARM_MIN) return "WARM";
-  return "COLD";
+  return "B";
 }
 
 // ====================================================================
 // STUFE 5: OUTPUT  (qualify = eine Funktion pro Business)
 // ====================================================================
 export function qualify(s: BusinessSignals, opts?: QualifyOptions): QualifiedLead {
-  const base: Omit<QualifiedLead, "tier" | "tier_c_on_hold" | "einstufung" | "substanz_score" | "pain_match" | "scrapebare_bewertung" | "empfehlung" | "begruendung_kurz"> & {
-    tier: Tier;
-  } = {
+  const tier = assignTier(s);
+  const base = {
     name: s.name,
-    tier: "B",
+    tier,
     ko_ausgeschlossen: false,
-    ko_grund: null,
+    ko_grund: null as string | null,
     im_erstkontakt_pruefen: {
-      entscheider_erreichbar: "unbekannt",
-      gesicht_zeigen: "unbekannt",
-      langfristig: "unbekannt",
-      chaos_signale: "unbekannt",
+      entscheider_erreichbar: "unbekannt" as const,
+      gesicht_zeigen: "unbekannt" as const,
+      langfristig: "unbekannt" as const,
+      chaos_signale: "unbekannt" as const,
     },
-    kontakt: {
-      telefon: s.phone ?? "",
-      website: s.website ?? "",
-      adresse: s.address ?? "",
-    },
+    kontakt: { telefon: s.phone ?? "", website: s.website ?? "", adresse: s.address ?? "" },
   };
 
-  const tier = assignTier(s);
-  const tierCOnHold = tier === "C";
-
-  // STUFE 1: KO -> sofort raus, keine weitere Bewertung
+  // STUFE 1: KO -> sofort RAUS
   const ko = runKO(s, opts);
   if (ko) {
+    const leer: Teilscore = { score: 0, signale: [], begruendung: "nicht bewertet (KO)" };
     return {
       ...base,
-      tier,
-      tier_c_on_hold: tierCOnHold,
+      tier_c_on_hold: false,
       einstufung: "RAUS",
-      substanz_score: 0,
-      pain_match: {
-        level: "niedrig",
-        kapital_score: 0,
-        kapital_signale: [],
-        loesbar: false,
-        anlass_status: "unbekannt",
-        begruendung: "nicht bewertet (KO)",
-      },
+      pay_score: 0, need_score: 0, fit_score: 0, pain_match_score: 0, final_score: 0,
+      pay: leer, need: leer, fit: leer,
+      pain_signals: [],
       ko_ausgeschlossen: true,
       ko_grund: ko,
-      scrapebare_bewertung: {
-        finanzielle_substanz: { score: 0, signale: [], begruendung: "nicht bewertet (KO)" },
-        visuell_darstellbar: { score: 0, signale: [], begruendung: "nicht bewertet (KO)" },
-        schmerzpunkt: { score: 0, signale: [], begruendung: "nicht bewertet (KO)" },
-      },
       empfehlung: "raus",
       begruendung_kurz: `RAUS: ${ko}.`,
     };
   }
 
-  // STUFE 2: Substanz
-  const fin = scoreFinanzielleSubstanz(s);
-  const vis = scoreVisuell(s);
-  const schmerz = scoreSchmerz(s);
-  const substanz = combineSubstanz(fin, vis, schmerz);
+  // STUFE 2: Rohachsen
+  const pay = scorePay(s);
+  const need = scoreNeed(s);
+  const fit = scoreFit(s);
 
-  // STUFE 4: Einstufung
-  const einstufung = einstufen(tier, substanz);
+  // STUFE 3: Pain-Signale
+  const pain_signals = computePainSignals(s);
+  const pain = painScore(pain_signals);
+  const highPain = hasHighWeightPain(pain_signals);
 
-  // Zweite Achse: Pain-Match (Kapital x Loesbarkeit)
-  const pain_match = computePainMatch(s, vis.score);
+  // STUFE 4: Verrechnung + Oberindikator
+  const final = verrechnen(pay.score, need.score, pain);
+  const einstufung = einstufen(pay.score, fit.score, final, highPain);
+  const offProfil = fit.score < C.FIT_GATE;
 
-  // Empfehlung
-  let empfehlung: Empfehlung;
-  if (tierCOnHold) empfehlung = "spaeter";
-  else if (einstufung === "HOT" || einstufung === "WARM") empfehlung = "kontaktieren";
-  else empfehlung = "spaeter";
+  const empfehlung: Empfehlung =
+    einstufung === "IN_NEED" || einstufung === "INTERESTED" ? "kontaktieren" : "spaeter";
 
+  const gefunden = pain_signals.filter((x) => x.found).map((x) => x.label);
   const begruendung_kurz =
-    (tierCOnHold
-      ? `Tier C (Strategie: auf Eis). Substanz ${substanz}/100 ${substanz >= C.SUBSTANZ_WARM_MIN ? "stimmt" : "schwach"}, daher ${einstufung}, "spaeter".`
-      : `Tier ${tier}, Substanz ${substanz}/100 -> ${einstufung}.`) +
-    " Bewertung nur auf scrapebaren Signalen; Erreichbarkeit/Langfristigkeit unbekannt.";
+    `${einstufung.replace("_", " ")}: final ${final}/100 ` +
+    `(pay ${pay.score}, need ${need.score}, fit ${fit.score}, pain ${pain}). ` +
+    (gefunden.length ? `Belegte Pain-Signale: ${gefunden.join(", ")}. ` : "Keine belegten Pain-Signale. ") +
+    (offProfil ? "Off-Profil (fit unter Gate) -> max COMMON. " : "") +
+    "Anlass/Erreichbarkeit/Langfristigkeit unbekannt -> Erstkontakt.";
 
   return {
     ...base,
-    tier,
-    tier_c_on_hold: tierCOnHold,
+    tier_c_on_hold: offProfil,
     einstufung,
-    substanz_score: substanz,
-    pain_match,
-    scrapebare_bewertung: {
-      finanzielle_substanz: fin,
-      visuell_darstellbar: vis,
-      schmerzpunkt: schmerz,
-    },
+    pay_score: pay.score,
+    need_score: need.score,
+    fit_score: fit.score,
+    pain_match_score: pain,
+    final_score: final,
+    pay, need, fit,
+    pain_signals,
     empfehlung,
     begruendung_kurz,
   };

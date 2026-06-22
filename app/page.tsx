@@ -67,13 +67,13 @@ function mergeGoogle(lead: Lead, g: GoogleEntry): Lead {
   };
 }
 
-const RANK: Record<Einstufung, number> = { HOT: 0, WARM: 1, COLD: 2, RAUS: 3 };
+const RANK: Record<Einstufung, number> = { IN_NEED: 0, INTERESTED: 1, COMMON: 2, RAUS: 3 };
 function sortClient(list: Lead[]): Lead[] {
   return [...list].sort((a, b) => {
     const r = RANK[a.einstufung] - RANK[b.einstufung];
     if (r !== 0) return r;
     if (a.tierCOnHold !== b.tierCOnHold) return a.tierCOnHold ? 1 : -1;
-    return b.substanzScore - a.substanzScore;
+    return b.finalScore - a.finalScore;
   });
 }
 
@@ -101,17 +101,17 @@ function requalify(l: Lead, filterChains: boolean): Lead {
     einstufung: q.einstufung,
     tier: q.tier,
     tierCOnHold: q.tier_c_on_hold,
-    substanzScore: q.substanz_score,
-    painMatch: q.pain_match,
+    payScore: q.pay_score,
+    needScore: q.need_score,
+    fitScore: q.fit_score,
+    painMatchScore: q.pain_match_score,
+    finalScore: q.final_score,
+    painSignals: q.pain_signals,
     koAusgeschlossen: q.ko_ausgeschlossen,
     koGrund: q.ko_grund,
     empfehlung: q.empfehlung,
     begruendungKurz: q.begruendung_kurz,
-    substanz: {
-      finanzielle: q.scrapebare_bewertung.finanzielle_substanz,
-      visuell: q.scrapebare_bewertung.visuell_darstellbar,
-      schmerz: q.scrapebare_bewertung.schmerzpunkt,
-    },
+    achsen: { pay: q.pay, need: q.need, fit: q.fit },
     erstkontakt: q.im_erstkontakt_pruefen,
   };
 }
@@ -187,7 +187,8 @@ export default function Page() {
     if (!origin || categories.length === 0 || scanning) return;
     setScanErrors([]);
     const cats = [...categories].sort();
-    const key = `v3|${origin.lat.toFixed(4)},${origin.lng.toFixed(4)},${radiusKm},${cats.join("+")}`;
+    // v4: Engine v3 (Oberindikator) -> alte v3-Caches haben inkompatible Lead-Form.
+    const key = `v4|${origin.lat.toFixed(4)},${origin.lng.toFixed(4)},${radiusKm},${cats.join("+")}`;
 
     setScanning(true);
     const started = Date.now();
@@ -368,13 +369,9 @@ export default function Page() {
   }, [displayLeads]);
 
   const counts = useMemo(() => {
-    const c: Record<Einstufung, number> = { HOT: 0, WARM: 0, COLD: 0, RAUS: 0 };
-    const pain = { hoch: 0, mittel: 0, niedrig: 0 };
-    for (const l of displayLeads) {
-      c[l.einstufung]++;
-      if (l.einstufung !== "RAUS") pain[l.painMatch.level]++;
-    }
-    return { ...c, pain };
+    const c: Record<Einstufung, number> = { IN_NEED: 0, INTERESTED: 0, COMMON: 0, RAUS: 0 };
+    for (const l of displayLeads) c[l.einstufung]++;
+    return c;
   }, [displayLeads]);
 
   const toggleCategory = (id: string) =>
@@ -386,13 +383,10 @@ export default function Page() {
         view={view}
         onViewChange={setView}
         scanned={displayLeads.length}
-        hot={counts.HOT}
-        warm={counts.WARM}
-        cold={counts.COLD}
+        inNeed={counts.IN_NEED}
+        interested={counts.INTERESTED}
+        common={counts.COMMON}
         raus={counts.RAUS}
-        painHoch={counts.pain.hoch}
-        painMittel={counts.pain.mittel}
-        painNiedrig={counts.pain.niedrig}
         pipeline={pipeline.length}
         scanning={scanning}
       />

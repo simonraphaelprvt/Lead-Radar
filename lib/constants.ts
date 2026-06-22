@@ -35,14 +35,22 @@ export const PIPELINE_STATUSES: PipelineStatus[] = [
   "Abgelehnt",
 ];
 
-export const RATINGS: Einstufung[] = ["HOT", "WARM", "COLD", "RAUS"];
+export const RATINGS: Einstufung[] = ["IN_NEED", "INTERESTED", "COMMON", "RAUS"];
 
-/** Farben fuer die Einstufungen (Pins, Badges). Spiegeln tailwind.config wider. */
+/** Oberindikator-Farben (Pins, Badges): IN NEED rot, INTERESTED orange, COMMON blau. */
 export const RATING_COLORS: Record<Einstufung, string> = {
-  HOT: "#DA5B4A",
-  WARM: "#C79A5B",
-  COLD: "#7A7A80",
+  IN_NEED: "#DA5B4A",
+  INTERESTED: "#D9913F",
+  COMMON: "#6E8FB0",
   RAUS: "#46464A",
+};
+
+/** Anzeige-Labels fuer den Oberindikator (Underscore -> Leerzeichen). */
+export const EINSTUFUNG_LABEL: Record<Einstufung, string> = {
+  IN_NEED: "IN NEED",
+  INTERESTED: "INTERESTED",
+  COMMON: "COMMON",
+  RAUS: "RAUS",
 };
 
 export const STATUS_COLORS: Record<PipelineStatus, string> = {

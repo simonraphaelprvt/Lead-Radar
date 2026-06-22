@@ -8,10 +8,12 @@ import type { Lead } from "./types";
 const CSV_COLUMNS: { key: string; label: string; get: (l: Lead) => string }[] = [
   { key: "name", label: "Name", get: (l) => l.name },
   { key: "einstufung", label: "Einstufung", get: (l) => l.einstufung },
+  { key: "final", label: "Final", get: (l) => String(l.finalScore) },
+  { key: "pay", label: "Zahlungskraft", get: (l) => String(l.payScore) },
+  { key: "need", label: "Bedarf", get: (l) => String(l.needScore) },
+  { key: "fit", label: "Fit", get: (l) => String(l.fitScore) },
+  { key: "pain", label: "Pain-Match", get: (l) => String(l.painMatchScore) },
   { key: "tier", label: "Tier", get: (l) => l.tier },
-  { key: "substanz", label: "Substanz", get: (l) => String(l.substanzScore) },
-  { key: "painmatch", label: "Pain-Match", get: (l) => l.painMatch.level },
-  { key: "kapital", label: "Kapital", get: (l) => String(l.painMatch.kapital_score) },
   { key: "empfehlung", label: "Empfehlung", get: (l) => l.empfehlung },
   { key: "ko", label: "KO-Grund", get: (l) => l.koGrund ?? "" },
   { key: "branch", label: "Branche", get: (l) => l.categoryLabel },
@@ -49,9 +51,11 @@ export function leadToMarkdown(lead: Lead): string {
     `branche: ${quoteYaml(lead.categoryLabel)}`,
     `einstufung: ${lead.einstufung}`,
     `tier: ${lead.tier}`,
-    `substanz: ${lead.substanzScore}`,
-    `pain_match: ${lead.painMatch.level}`,
-    `kapital: ${lead.painMatch.kapital_score}`,
+    `final: ${lead.finalScore}`,
+    `pay: ${lead.payScore}`,
+    `need: ${lead.needScore}`,
+    `fit: ${lead.fitScore}`,
+    `pain_match: ${lead.painMatchScore}`,
     `empfehlung: ${lead.empfehlung}`,
     `instagram: ${quoteYaml(ig)}`,
     `telefon: ${quoteYaml(lead.phone ?? "")}`,
@@ -61,22 +65,26 @@ export function leadToMarkdown(lead: Lead): string {
     "---",
   ].join("\n");
 
-  const sub = lead.substanz;
+  const a = lead.achsen;
+  const painLines = lead.painSignals.map((p) => {
+    const mark = p.found ? "✓" : p.pruefbar ? "—" : "?";
+    return `- ${mark} ${p.label} (${p.weight}): ${p.beleg}`;
+  });
+  const indikatorLabel = lead.einstufung.replace("_", " ");
   const body = [
     `# ${lead.name}`,
     "",
-    `**${lead.einstufung}** · Tier ${lead.tier}${lead.tierCOnHold ? " (on hold)" : ""} · Substanz ${lead.substanzScore}/100 · Pain-Match ${lead.painMatch.level} (Kapital ${lead.painMatch.kapital_score})`,
+    `**${indikatorLabel}** · final ${lead.finalScore}/100 · pay ${lead.payScore} · need ${lead.needScore} · fit ${lead.fitScore} · pain ${lead.painMatchScore} · Tier ${lead.tier}${lead.tierCOnHold ? " (off-profile)" : ""}`,
     lead.koGrund ? `**KO:** ${lead.koGrund}` : "",
     lead.begruendungKurz ? `> ${lead.begruendungKurz}` : "",
     "",
-    "## Scrapebare Bewertung",
-    `- Finanzielle Substanz: ${sub.finanzielle.score} — ${sub.finanzielle.begruendung}`,
-    `- Visuell darstellbar: ${sub.visuell.score} — ${sub.visuell.begruendung}`,
-    `- Schmerzpunkt: ${sub.schmerz.score} — ${sub.schmerz.begruendung}`,
+    "## Rohachsen",
+    `- Zahlungskraft (pay): ${a.pay.score} — ${a.pay.begruendung}`,
+    `- Bedarf (need): ${a.need.score} — ${a.need.begruendung}`,
+    `- Fit: ${a.fit.score} — ${a.fit.begruendung}`,
     "",
-    "## Pain-Match (Kapital × Lösbarkeit)",
-    `- Einstufung: ${lead.painMatch.level}`,
-    `- ${lead.painMatch.begruendung}`,
+    "## Pain-Signale (einzeln belegt)",
+    ...(painLines.length ? painLines : ["- keine"]),
     "",
     "## Im Erstkontakt pruefen (nicht scrapebar)",
     "- Konkreter Anlass / Phase (Launch, Event, Recruiting): unbekannt",

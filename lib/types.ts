@@ -12,11 +12,11 @@ import type {
   Empfehlung,
   CheckStatus,
   Teilscore,
-  PainMatch,
-  PainMatchResult,
+  PainSignal,
+  PainWeight,
 } from "./reasoning";
 
-export type { Tier, Einstufung, Empfehlung, CheckStatus, Teilscore, PainMatch, PainMatchResult };
+export type { Tier, Einstufung, Empfehlung, CheckStatus, Teilscore, PainSignal, PainWeight };
 
 export type PipelineStatus =
   | "Neu"
@@ -60,22 +60,27 @@ export interface Lead {
   photoCount?: number | null;
   types?: string[];
 
-  // ---- Reasoning-Engine v2 ----
-  einstufung: Einstufung; // HOT | WARM | COLD | RAUS
-  tier: Tier; // A | B | C
-  tierCOnHold: boolean;
-  substanzScore: number; // 0..100
-  /** Zweite Achse: Pain-Match (Kapital x Loesbarkeit), neben der Einstufung. */
-  painMatch: PainMatchResult;
+  // ---- Reasoning-Engine v3 (Oberindikator) ----
+  einstufung: Einstufung; // IN_NEED | INTERESTED | COMMON | RAUS  (EINZIGER Indikator)
+  tier: Tier; // A | B | C  (nur Liste/Detail)
+  tierCOnHold: boolean; // off-profile (fit unter Gate)
+  /** Rohachsen 0..100 - Begruendung hinter dem Oberindikator (Liste/Detail). */
+  payScore: number;
+  needScore: number;
+  fitScore: number;
+  painMatchScore: number;
+  finalScore: number;
+  /** Jedes Pain-Signal einzeln (gefunden / nicht / nicht pruefbar) mit Beleg. */
+  painSignals: PainSignal[];
   koAusgeschlossen: boolean;
   koGrund: string | null;
   empfehlung: Empfehlung; // kontaktieren | spaeter | raus
   begruendungKurz: string;
-  /** Die drei scrapebaren Teilscores mit Signalen + Begruendung. */
-  substanz: {
-    finanzielle: Teilscore;
-    visuell: Teilscore;
-    schmerz: Teilscore;
+  /** Die drei Rohachsen mit treibenden Signalen. */
+  achsen: {
+    pay: Teilscore;
+    need: Teilscore;
+    fit: Teilscore;
   };
   /** Checkliste "im Erstkontakt pruefen" - immer "unbekannt", nie gescort. */
   erstkontakt: {

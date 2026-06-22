@@ -58,19 +58,22 @@ export default function MapView(props: MapViewProps) {
 
     const selId = selectedIdRef.current;
     for (const lead of leadsRef.current) {
-      const isHot = lead.einstufung === "HOT";
+      const isInNeed = lead.einstufung === "IN_NEED";
       const isSel = lead.id === selId;
-      const cls = lead.einstufung.toLowerCase(); // hot|warm|cold|raus
+      const cls = lead.einstufung.toLowerCase(); // in_need|interested|common|raus
 
       let html = "";
       // Ruhiger Ring nur fuer den ausgewaehlten Pin (kein Dauer-Pulsieren).
       if (isSel) html += '<div class="mk-ring--sel"></div>';
-      if (isHot || isSel) {
+      if (isInNeed || isSel) {
         const name = lead.name.length > 26 ? lead.name.slice(0, 25) + "…" : lead.name;
+        const label = lead.einstufung === "IN_NEED" ? "IN NEED"
+          : lead.einstufung === "INTERESTED" ? "INTERESTED"
+          : lead.einstufung === "COMMON" ? "COMMON" : "RAUS";
         html +=
-          `<div class="mk-tag${isHot && !isSel ? " mk-tag--hot" : ""}">` +
+          `<div class="mk-tag${isInNeed && !isSel ? " mk-tag--hot" : ""}">` +
           `<span class="mk-tag-name">${escapeHtml(name)}</span>` +
-          `<span class="mk-tag-meta">${lead.einstufung} · ${lead.substanzScore} · ${escapeHtml(lead.categoryLabel)}</span>` +
+          `<span class="mk-tag-meta">${label} · ${lead.finalScore} · ${escapeHtml(lead.categoryLabel)}</span>` +
           `</div>`;
       }
       const icon = L.divIcon({

@@ -39,7 +39,7 @@ function Card({
         <EinstufungBadge e={lead.einstufung} />
       </div>
       <div className="mt-1.5 flex items-center gap-2 text-[10px] text-phosphor-muted">
-        <span className="font-mono tabular-nums">{lead.substanzScore}</span>
+        <span className="font-mono tabular-nums">{lead.finalScore}</span>
         {lead.phone && <span>☎</span>}
         {typeof lead.instagram === "string" && <span className="text-phosphor">IG</span>}
         <span className="truncate">{lead.categoryLabel}</span>
