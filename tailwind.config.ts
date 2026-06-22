@@ -1,8 +1,12 @@
 import type { Config } from "tailwindcss";
 
 /**
- * Military-Terminal-Theme.
- * Leitfarbe: Phosphor-Gruen. Status-Farben fuer Pins: HOT (rot), WARM (bernstein), COLD (gruen-grau).
+ * Studio-Look v2 (Linear / Vercel / Stripe-Richtung): sehr dunkle neutrale
+ * Basis (#0B0B0C), viel Grau, EIN ruhiger Akzent. Kein Neon, kein Glow.
+ *
+ * Hinweis: die Token-Gruppen heissen aus historischen Gruenden "terminal"
+ * (Flaechen) und "phosphor" (Akzent/Text); sie tragen jetzt die ruhige
+ * Studio-Palette.
  */
 const config: Config = {
   content: ["./app/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}"],
@@ -10,44 +14,53 @@ const config: Config = {
     extend: {
       colors: {
         terminal: {
-          bg: "#05080a",        // Haupt-Hintergrund, fast schwarz
-          panel: "#0a1110",     // Panel-Flaechen
-          "panel-2": "#0d1614", // leicht heller
-          border: "#16302a",    // feine Rahmen
-          grid: "#0f211d",      // Grid-Linien
+          bg: "#0B0B0C", // App-Hintergrund (fast schwarz, neutral)
+          panel: "#141416", // Panel-Flaeche
+          "panel-2": "#1A1A1D", // leicht heller
+          border: "#262629", // dezenter 1px-Rahmen
+          grid: "#1A1A1D",
         },
         phosphor: {
-          DEFAULT: "#39ff8b",   // Leitfarbe
-          dim: "#1f7a52",       // gedaempft
-          glow: "#7dffb6",      // hell fuer Highlights
-          text: "#9ff5c4",      // Standard-Textfarbe
-          muted: "#4d7a66",     // sekundaerer Text
+          DEFAULT: "#6E92C9", // ruhiger, entsaettigter Blau-Akzent
+          dim: "#2E3A4A", // gedaempft (Rahmen/aktive Flaechen)
+          glow: "#8AA8D6",
+          text: "#ECECEE", // klarer heller Text
+          muted: "#8A8A8F", // sekundaerer Text
+          dimtext: "#5A5A60", // tertiaer
         },
         amber: {
-          DEFAULT: "#ffb000",
-          dim: "#7a5400",
+          DEFAULT: "#C79A5B", // gedaempftes Sand/Amber (WARM)
+          dim: "#4A3C22",
         },
         status: {
-          hot: "#ff3b3b",
-          warm: "#ffb000",
-          cold: "#6f8f80",
+          hot: "#DA5B4A", // kraeftig, aber nicht neon
+          warm: "#C79A5B", // gedaempftes Amber/Sand
+          cold: "#7A7A80", // neutrales Grau
+          raus: "#46464A", // stark zurueckgenommen, fast ausgegraut
         },
       },
       fontFamily: {
+        sans: [
+          "var(--font-inter)",
+          "ui-sans-serif",
+          "system-ui",
+          "-apple-system",
+          "Segoe UI",
+          "Roboto",
+          "sans-serif",
+        ],
         mono: [
+          "var(--font-mono)",
           "ui-monospace",
           "SFMono-Regular",
           "Menlo",
-          "Monaco",
-          "Consolas",
-          "Liberation Mono",
-          "Courier New",
           "monospace",
         ],
       },
-      boxShadow: {
-        glow: "0 0 8px rgba(57,255,139,0.35), 0 0 24px rgba(57,255,139,0.12)",
-        "glow-hot": "0 0 10px rgba(255,59,59,0.6), 0 0 24px rgba(255,59,59,0.25)",
+      borderRadius: {
+        md: "8px",
+        lg: "10px",
+        xl: "14px",
       },
     },
   },

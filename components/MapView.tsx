@@ -1,275 +1,269 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import maplibregl from "maplibre-gl";
-import "maplibre-gl/dist/maplibre-gl.css";
+import { useEffect, useRef } from "react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 import type { Lead } from "@/lib/types";
 import { APP_CONFIG } from "@/lib/constants";
 
-const DARK_STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
-const CLUSTER_PX = 46; // Pixel-Rasterweite fuer einfaches Clustering
+// Satellitenbild (Esri World Imagery, kostenlos, kein Key) + dezente dunkle
+// Ortslabels (CARTO). Raster-Kacheln (kein WebGL) -> browser-robust.
+const ESRI =
+  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
+const CARTO_LABELS = "https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png";
 
 interface MapViewProps {
   leads: Lead[];
   origin: { lat: number; lng: number } | null;
   radiusKm: number;
   scanning: boolean;
+  selectedId?: string;
   onSetOrigin: (o: { lat: number; lng: number }) => void;
   onSelectLead: (lead: Lead) => void;
 }
 
-/** Naeherungsweise Kreis-Polygon-Koordinaten (equirektangular, fuer kleine Radien gut genug). */
-function circlePolygon(lat: number, lng: number, km: number, n = 64): number[][] {
-  const dLat = km / 110.574;
-  const dLng = km / (111.32 * Math.cos((lat * Math.PI) / 180));
-  const coords: number[][] = [];
-  for (let i = 0; i <= n; i++) {
-    const a = (i / n) * 2 * Math.PI;
-    coords.push([lng + dLng * Math.cos(a), lat + dLat * Math.sin(a)]);
-  }
-  return coords;
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) =>
+    c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : c === '"' ? "&quot;" : "&#39;",
+  );
 }
 
 export default function MapView(props: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<maplibregl.Map | null>(null);
-  const loadedRef = useRef(false);
-  const markersRef = useRef<maplibregl.Marker[]>([]);
-  const originMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const mapRef = useRef<L.Map | null>(null);
+  const markersRef = useRef<L.LayerGroup | null>(null);
+  const circleRef = useRef<L.Circle | null>(null);
+  const pulseRef = useRef<L.Circle | null>(null);
+  const originMarkerRef = useRef<L.Marker | null>(null);
 
-  // Aktuelle Werte fuer Event-Closures
   const leadsRef = useRef(props.leads);
   const originRef = useRef(props.origin);
   const radiusRef = useRef(props.radiusKm);
   const scanningRef = useRef(props.scanning);
+  const selectedIdRef = useRef(props.selectedId);
   const onSelectRef = useRef(props.onSelectLead);
   const onSetOriginRef = useRef(props.onSetOrigin);
-
-  const [sweep, setSweep] = useState<{ x: number; y: number; r: number } | null>(null);
 
   useEffect(() => {
     onSelectRef.current = props.onSelectLead;
     onSetOriginRef.current = props.onSetOrigin;
   });
 
-  // ---- Marker (mit einfachem Grid-Clustering) neu zeichnen ----
+  // ---- Marker neu zeichnen ----
   function renderMarkers() {
     const map = mapRef.current;
-    if (!map || !loadedRef.current) return;
-    markersRef.current.forEach((m) => m.remove());
-    markersRef.current = [];
+    const group = markersRef.current;
+    if (!map || !group) return;
+    group.clearLayers();
 
-    const leads = leadsRef.current;
-    if (leads.length === 0) return;
+    const selId = selectedIdRef.current;
+    for (const lead of leadsRef.current) {
+      const isHot = lead.einstufung === "HOT";
+      const isSel = lead.id === selId;
+      const cls = lead.einstufung.toLowerCase(); // hot|warm|cold|raus
 
-    const cells = new Map<string, Lead[]>();
-    for (const lead of leads) {
-      const p = map.project([lead.lng, lead.lat]);
-      const key = `${Math.floor(p.x / CLUSTER_PX)}:${Math.floor(p.y / CLUSTER_PX)}`;
-      const arr = cells.get(key);
-      if (arr) arr.push(lead);
-      else cells.set(key, [lead]);
-    }
-
-    for (const group of cells.values()) {
-      if (group.length === 1) {
-        const lead = group[0];
-        const el = document.createElement("div");
-        el.className = `lr-pin lr-pin--${lead.score.rating.toLowerCase()}`;
-        el.title = `${lead.name} (${lead.score.rating} ${lead.score.final})`;
-        el.addEventListener("click", (e) => {
-          e.stopPropagation();
-          onSelectRef.current(lead);
-        });
-        markersRef.current.push(
-          new maplibregl.Marker({ element: el }).setLngLat([lead.lng, lead.lat]).addTo(map),
-        );
-      } else {
-        const avgLng = group.reduce((s, l) => s + l.lng, 0) / group.length;
-        const avgLat = group.reduce((s, l) => s + l.lat, 0) / group.length;
-        const hot = group.some((l) => l.score.rating === "HOT");
-        const el = document.createElement("div");
-        el.className = "lr-cluster";
-        el.textContent = String(group.length);
-        if (hot) el.style.borderColor = "var(--hot)";
-        el.addEventListener("click", (e) => {
-          e.stopPropagation();
-          map.easeTo({ center: [avgLng, avgLat], zoom: Math.min(18, map.getZoom() + 2) });
-        });
-        markersRef.current.push(
-          new maplibregl.Marker({ element: el }).setLngLat([avgLng, avgLat]).addTo(map),
-        );
+      let html = "";
+      // Ruhiger Ring nur fuer den ausgewaehlten Pin (kein Dauer-Pulsieren).
+      if (isSel) html += '<div class="mk-ring--sel"></div>';
+      if (isHot || isSel) {
+        const name = lead.name.length > 26 ? lead.name.slice(0, 25) + "…" : lead.name;
+        html +=
+          `<div class="mk-tag${isHot && !isSel ? " mk-tag--hot" : ""}">` +
+          `<span class="mk-tag-name">${escapeHtml(name)}</span>` +
+          `<span class="mk-tag-meta">${lead.einstufung} · ${lead.substanzScore} · ${escapeHtml(lead.categoryLabel)}</span>` +
+          `</div>`;
       }
+      const icon = L.divIcon({
+        html: `<div class="mk mk--${cls}"></div>${html}`,
+        className: "mk-wrap",
+        iconSize: [14, 14],
+        iconAnchor: [7, 7],
+      });
+      const marker = L.marker([lead.lat, lead.lng], { icon, riseOnHover: true });
+      marker.on("click", () => onSelectRef.current(lead));
+      marker.addTo(group);
     }
   }
 
-  // ---- Radar-Sweep-Geometrie aktualisieren ----
-  function updateSweep() {
-    const map = mapRef.current;
-    const origin = originRef.current;
-    if (!map || !scanningRef.current || !origin) {
-      setSweep(null);
-      return;
-    }
-    const c = map.project([origin.lng, origin.lat]);
-    const dLat = radiusRef.current / 110.574;
-    const top = map.project([origin.lng, origin.lat + dLat]);
-    const r = Math.hypot(top.x - c.x, top.y - c.y);
-    setSweep({ x: c.x, y: c.y, r });
-  }
-
-  // ---- Radius-Kreis aktualisieren ----
+  // ---- Radius-Kreis ----
   function updateCircle() {
     const map = mapRef.current;
-    if (!map || !loadedRef.current) return;
-    const origin = originRef.current;
-    const src = map.getSource("lr-radius") as maplibregl.GeoJSONSource | undefined;
-    if (!src) return;
-    src.setData({
-      type: "Feature",
-      geometry: origin
-        ? { type: "Polygon", coordinates: [circlePolygon(origin.lat, origin.lng, radiusRef.current)] }
-        : { type: "Polygon", coordinates: [[]] },
-      properties: {},
-    });
+    if (!map) return;
+    const o = originRef.current;
+    if (!o) {
+      if (circleRef.current) {
+        map.removeLayer(circleRef.current);
+        circleRef.current = null;
+      }
+      return;
+    }
+    const meters = radiusRef.current * 1000;
+    if (!circleRef.current) {
+      circleRef.current = L.circle([o.lat, o.lng], {
+        radius: meters,
+        color: "#6E92C9",
+        weight: 1,
+        opacity: 0.6,
+        fillColor: "#6E92C9",
+        fillOpacity: 0.05,
+        dashArray: "4 4",
+        interactive: false,
+      }).addTo(map);
+    } else {
+      circleRef.current.setLatLng([o.lat, o.lng]).setRadius(meters);
+    }
+  }
+
+  // ---- Scan-Puls (Leaflet-Kreis mit pulsierendem Rand, kein React-Rerender) ----
+  function updatePulse() {
+    const map = mapRef.current;
+    if (!map) return;
+    const o = originRef.current;
+    const active = scanningRef.current && !!o;
+    if (active && o) {
+      const meters = radiusRef.current * 1000;
+      if (!pulseRef.current) {
+        pulseRef.current = L.circle([o.lat, o.lng], {
+          radius: meters,
+          className: "scan-pulse-circle",
+          color: "#6E92C9",
+          weight: 2,
+          opacity: 0.85,
+          fill: false,
+          interactive: false,
+        }).addTo(map);
+      } else {
+        pulseRef.current.setLatLng([o.lat, o.lng]).setRadius(meters);
+      }
+    } else if (pulseRef.current) {
+      map.removeLayer(pulseRef.current);
+      pulseRef.current = null;
+    }
+  }
+
+  // ---- Origin-Marker ----
+  function updateOrigin() {
+    const map = mapRef.current;
+    if (!map) return;
+    const o = originRef.current;
+    if (!o) return;
+    if (!originMarkerRef.current) {
+      const icon = L.divIcon({
+        className: "origin-wrap",
+        html:
+          '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#6E92C9" stroke-width="1.5">' +
+          '<circle cx="12" cy="12" r="6"/><line x1="12" y1="1" x2="12" y2="6"/>' +
+          '<line x1="12" y1="18" x2="12" y2="23"/><line x1="1" y1="12" x2="6" y2="12"/>' +
+          '<line x1="18" y1="12" x2="23" y2="12"/><circle cx="12" cy="12" r="1.5" fill="#6E92C9"/></svg>',
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
+      });
+      const m = L.marker([o.lat, o.lng], { icon, draggable: true, zIndexOffset: 1000 }).addTo(map);
+      m.on("dragend", () => {
+        const ll = m.getLatLng();
+        onSetOriginRef.current({ lat: ll.lat, lng: ll.lng });
+      });
+      originMarkerRef.current = m;
+    } else {
+      originMarkerRef.current.setLatLng([o.lat, o.lng]);
+    }
   }
 
   // ---- Init (einmalig) ----
   useEffect(() => {
     if (mapRef.current || !containerRef.current) return;
     const start = props.origin ?? APP_CONFIG.DEFAULT_CENTER;
-    const map = new maplibregl.Map({
-      container: containerRef.current,
-      style: DARK_STYLE,
-      center: [start.lng, start.lat],
+    const map = L.map(containerRef.current, {
+      center: [start.lat, start.lng],
       zoom: APP_CONFIG.DEFAULT_ZOOM,
-      attributionControl: { compact: true },
+      zoomControl: false,
+      attributionControl: true,
     });
     mapRef.current = map;
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
+    L.control.zoom({ position: "bottomright" }).addTo(map);
+    map.attributionControl.setPrefix(false);
 
-    map.on("load", () => {
-      loadedRef.current = true;
-      map.addSource("lr-radius", {
-        type: "geojson",
-        data: { type: "Feature", geometry: { type: "Polygon", coordinates: [[]] }, properties: {} },
-      });
-      map.addLayer({
-        id: "lr-radius-fill",
-        type: "fill",
-        source: "lr-radius",
-        paint: { "fill-color": "#39ff8b", "fill-opacity": 0.06 },
-      });
-      map.addLayer({
-        id: "lr-radius-line",
-        type: "line",
-        source: "lr-radius",
-        paint: { "line-color": "#39ff8b", "line-width": 1, "line-dasharray": [3, 3], "line-opacity": 0.6 },
-      });
-      updateCircle();
-      renderMarkers();
+    // Labels in eigene Pane (ueber Satellit, unter Markern).
+    map.createPane("labels");
+    const lp = map.getPane("labels");
+    if (lp) lp.style.zIndex = "350";
+
+    // Leicht abgedunkelt ueber Opacity (dunkler Container scheint durch) statt
+    // CSS-Filter -> fluessiges Panning, kein Safari-Ruckeln.
+    L.tileLayer(ESRI, {
+      maxZoom: 19,
+      opacity: 0.9,
+      keepBuffer: 2,
+      updateWhenIdle: true,
+      attribution: "Esri, Maxar, Earthstar Geographics",
+    }).addTo(map);
+    L.tileLayer(CARTO_LABELS, {
+      subdomains: "abcd",
+      opacity: 0.6,
+      keepBuffer: 2,
+      updateWhenIdle: true,
+      pane: "labels",
+      attribution: "© CARTO",
+    }).addTo(map);
+
+    markersRef.current = L.layerGroup().addTo(map);
+
+    map.on("click", (e: L.LeafletMouseEvent) => {
+      onSetOriginRef.current({ lat: e.latlng.lat, lng: e.latlng.lng });
     });
 
-    map.on("click", (e) => {
-      onSetOriginRef.current({ lat: e.lngLat.lat, lng: e.lngLat.lng });
-    });
-    map.on("moveend", () => {
-      renderMarkers();
-      updateSweep();
-    });
-    map.on("move", () => updateSweep());
+    updateOrigin();
+    updateCircle();
+    renderMarkers();
+
+    // Container-Groessenaenderungen abfangen (Leaflet braucht invalidateSize,
+    // sonst bleiben Kacheln grau/leer, wenn der Container spaeter Groesse bekommt).
+    const ro = new ResizeObserver(() => map.invalidateSize());
+    ro.observe(containerRef.current);
+    // direkt nach dem Mount einmal sicher nachmessen
+    setTimeout(() => map.invalidateSize(), 0);
+    setTimeout(() => map.invalidateSize(), 250);
 
     return () => {
+      ro.disconnect();
       map.remove();
       mapRef.current = null;
-      loadedRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---- Leads geaendert ----
   useEffect(() => {
     leadsRef.current = props.leads;
     renderMarkers();
   }, [props.leads]);
 
-  // ---- Origin geaendert: Marker + Kreis ----
+  useEffect(() => {
+    selectedIdRef.current = props.selectedId;
+    renderMarkers();
+  }, [props.selectedId]);
+
   useEffect(() => {
     originRef.current = props.origin;
+    updateOrigin();
     updateCircle();
-    updateSweep();
-
-    const map = mapRef.current;
-    if (!map) return;
-    if (props.origin) {
-      if (!originMarkerRef.current) {
-        const el = document.createElement("div");
-        el.className = "lr-origin";
-        el.innerHTML =
-          '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="#39ff8b" stroke-width="1.5">' +
-          '<circle cx="12" cy="12" r="6"/><line x1="12" y1="0" x2="12" y2="6"/>' +
-          '<line x1="12" y1="18" x2="12" y2="24"/><line x1="0" y1="12" x2="6" y2="12"/>' +
-          '<line x1="18" y1="12" x2="24" y2="12"/><circle cx="12" cy="12" r="1.5" fill="#39ff8b"/></svg>';
-        const marker = new maplibregl.Marker({ element: el, draggable: true })
-          .setLngLat([props.origin.lng, props.origin.lat])
-          .addTo(map);
-        marker.on("dragend", () => {
-          const ll = marker.getLngLat();
-          onSetOriginRef.current({ lat: ll.lat, lng: ll.lng });
-        });
-        originMarkerRef.current = marker;
-      } else {
-        originMarkerRef.current.setLngLat([props.origin.lng, props.origin.lat]);
-      }
-    }
+    updatePulse();
   }, [props.origin]);
 
-  // ---- Radius geaendert ----
   useEffect(() => {
     radiusRef.current = props.radiusKm;
     updateCircle();
-    updateSweep();
+    updatePulse();
   }, [props.radiusKm]);
 
-  // ---- Scanning geaendert ----
   useEffect(() => {
     scanningRef.current = props.scanning;
-    updateSweep();
+    updatePulse();
   }, [props.scanning]);
 
   return (
-    <div className="relative h-full w-full crosshair-map">
+    <div className="relative h-full w-full isolate crosshair-map">
       <div ref={containerRef} className="absolute inset-0" />
 
-      {/* Radar-Sweep-Overlay */}
-      {sweep && (
-        <div
-          className="pointer-events-none absolute z-10"
-          style={{
-            left: sweep.x - sweep.r,
-            top: sweep.y - sweep.r,
-            width: sweep.r * 2,
-            height: sweep.r * 2,
-          }}
-        >
-          <div className="absolute inset-0 rounded-full border border-phosphor/40" />
-          <div
-            className="absolute inset-0 rounded-full"
-            style={{
-              background:
-                "conic-gradient(from 0deg, rgba(57,255,139,0) 0deg, rgba(57,255,139,0) 300deg, rgba(57,255,139,0.35) 358deg, rgba(57,255,139,0.6) 360deg)",
-              animation: "radar-sweep 1.6s linear infinite",
-              maskImage: "radial-gradient(circle, #000 0%, #000 99%, transparent 100%)",
-              WebkitMaskImage: "radial-gradient(circle, #000 0%, #000 99%, transparent 100%)",
-            }}
-          />
-        </div>
-      )}
-
-      {/* Karten-Eck-HUD */}
-      <div className="pointer-events-none absolute left-3 bottom-3 z-10 text-[10px] tracking-widest text-phosphor-muted/70">
-        CARTO DARK-MATTER // MAPLIBRE-GL
-      </div>
     </div>
   );
 }

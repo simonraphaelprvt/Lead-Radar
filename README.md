@@ -1,8 +1,8 @@
 # LEAD RADAR
 
-**Akquise-Command-Center für lokale Businesses.** Eine Military-Terminal-Web-App: dunkle Karte, Radar-Scan über ein Gebiet, gefundene Businesses werden automatisch als Lead bewertet (HOT / WARM / COLD), landen in einer Notion-Pipeline und bekommen auf Knopfdruck eine personalisierte Outreach-Nachricht inklusive konkreter Content-Idee.
+**Akquise-Command-Center für lokale Businesses.** Ein taktisches Command-Center im Palantir-Stil: entsättigte **Satellitenkarte** (Esri World Imagery, kostenlos, kein Key), Radar-Scan über ein Gebiet, gefundene Businesses werden automatisch als Lead bewertet (HOT / WARM / COLD) und als taktische Marker mit Label-Tags auf der Karte angezeigt, landen in einer Notion-Pipeline und bekommen auf Knopfdruck eine personalisierte Outreach-Nachricht inklusive konkreter Content-Idee.
 
-Gebaut mit **Next.js (App Router) + TypeScript + TailwindCSS + MapLibre GL**. Datenquelle **OpenStreetMap / Overpass API** (kostenlos, kein API-Key, kein Billing), Lead-Speicher **Notion API**, Outreach optional über die **Anthropic API**.
+Gebaut mit **Next.js (App Router) + TypeScript + TailwindCSS + Leaflet** (Raster-Kacheln, browser-robust). Datenquelle **OpenStreetMap / Overpass API** (kostenlos, kein API-Key, kein Billing), Lead-Speicher **Notion API**, Outreach optional über die **Anthropic API**.
 
 ---
 
@@ -137,7 +137,7 @@ Der Gesamt-Score nutzt Zahlungskraft als Multiplikator auf den Bedarf: `need × 
 app/
   page.tsx              Orchestrator (State, Cache, Handler)
   layout.tsx            Root-Layout
-  globals.css           Terminal-Theme (Scanlines, Glow, Radar, Pins)
+  globals.css           Taktisches Theme (Navy/Grau, Cyan-Akzent, Marker/Tags)
   api/
     places/route.ts     OpenStreetMap/Overpass: suchen + scoren
     enrich/route.ts     Instagram aus Firmen-Website

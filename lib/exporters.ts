@@ -1,18 +1,22 @@
 // ====================================================================
 // Export-Helfer: CSV (alle/gefilterte Leads) und Markdown (atomare Notiz).
-// Reine Funktionen, im Client nutzbar.
+// Reine Funktionen, im Client nutzbar. Schema: Reasoning-Engine v2.
 // ====================================================================
 
 import type { Lead } from "./types";
 
 const CSV_COLUMNS: { key: string; label: string; get: (l: Lead) => string }[] = [
   { key: "name", label: "Name", get: (l) => l.name },
-  { key: "rating", label: "Bewertung", get: (l) => l.score.rating },
-  { key: "score", label: "Score", get: (l) => String(l.score.final) },
-  { key: "pay", label: "Zahlungskraft", get: (l) => String(l.score.pay) },
-  { key: "need", label: "Bedarf", get: (l) => String(l.score.need) },
-  { key: "fit", label: "Fit", get: (l) => String(l.score.fit) },
-  { key: "branch", label: "Branche", get: (l) => l.branchLabel },
+  { key: "einstufung", label: "Einstufung", get: (l) => l.einstufung },
+  { key: "tier", label: "Tier", get: (l) => l.tier },
+  { key: "substanz", label: "Substanz", get: (l) => String(l.substanzScore) },
+  { key: "painmatch", label: "Pain-Match", get: (l) => l.painMatch.level },
+  { key: "kapital", label: "Kapital", get: (l) => String(l.painMatch.kapital_score) },
+  { key: "empfehlung", label: "Empfehlung", get: (l) => l.empfehlung },
+  { key: "ko", label: "KO-Grund", get: (l) => l.koGrund ?? "" },
+  { key: "branch", label: "Branche", get: (l) => l.categoryLabel },
+  { key: "rating", label: "Google-Rating", get: (l) => (l.rating != null ? String(l.rating) : "") },
+  { key: "reviews", label: "Reviews", get: (l) => String(l.reviewCount ?? "") },
   { key: "phone", label: "Telefon", get: (l) => l.phone ?? "" },
   {
     key: "instagram",
@@ -21,24 +25,17 @@ const CSV_COLUMNS: { key: string; label: string; get: (l: Lead) => string }[] = 
   },
   { key: "website", label: "Website", get: (l) => l.website ?? "" },
   { key: "address", label: "Adresse", get: (l) => l.address },
-  { key: "reviews", label: "Anzahl Bewertungen", get: (l) => String(l.reviewCount ?? "") },
   { key: "maps", label: "Google Maps", get: (l) => l.googleMapsUri ?? "" },
 ];
 
 function csvCell(value: string): string {
-  // RFC-4180: bei Komma, Anfuehrungszeichen oder Zeilenumbruch quoten.
-  if (/[",\n]/.test(value)) {
-    return `"${value.replace(/"/g, '""')}"`;
-  }
+  if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
   return value;
 }
 
 export function leadsToCsv(leads: Lead[]): string {
   const header = CSV_COLUMNS.map((c) => c.label).join(",");
-  const rows = leads.map((l) =>
-    CSV_COLUMNS.map((c) => csvCell(c.get(l))).join(","),
-  );
-  // BOM voranstellen, damit Excel die Umlaute korrekt liest.
+  const rows = leads.map((l) => CSV_COLUMNS.map((c) => csvCell(c.get(l))).join(","));
   return "﻿" + [header, ...rows].join("\r\n");
 }
 
@@ -49,9 +46,13 @@ export function leadToMarkdown(lead: Lead): string {
   const fm = [
     "---",
     `name: ${quoteYaml(lead.name)}`,
-    `branche: ${quoteYaml(lead.branchLabel)}`,
-    `score: ${lead.score.final}`,
-    `bewertung: ${lead.score.rating}`,
+    `branche: ${quoteYaml(lead.categoryLabel)}`,
+    `einstufung: ${lead.einstufung}`,
+    `tier: ${lead.tier}`,
+    `substanz: ${lead.substanzScore}`,
+    `pain_match: ${lead.painMatch.level}`,
+    `kapital: ${lead.painMatch.kapital_score}`,
+    `empfehlung: ${lead.empfehlung}`,
     `instagram: ${quoteYaml(ig)}`,
     `telefon: ${quoteYaml(lead.phone ?? "")}`,
     `quelle: Google Places`,
@@ -60,11 +61,29 @@ export function leadToMarkdown(lead: Lead): string {
     "---",
   ].join("\n");
 
+  const sub = lead.substanz;
   const body = [
     `# ${lead.name}`,
     "",
-    `**Bewertung:** ${lead.score.rating}  (Score ${lead.score.final})`,
-    `**Zahlungskraft:** ${lead.score.pay} | **Bedarf:** ${lead.score.need} | **Fit:** ${lead.score.fit}`,
+    `**${lead.einstufung}** · Tier ${lead.tier}${lead.tierCOnHold ? " (on hold)" : ""} · Substanz ${lead.substanzScore}/100 · Pain-Match ${lead.painMatch.level} (Kapital ${lead.painMatch.kapital_score})`,
+    lead.koGrund ? `**KO:** ${lead.koGrund}` : "",
+    lead.begruendungKurz ? `> ${lead.begruendungKurz}` : "",
+    "",
+    "## Scrapebare Bewertung",
+    `- Finanzielle Substanz: ${sub.finanzielle.score} — ${sub.finanzielle.begruendung}`,
+    `- Visuell darstellbar: ${sub.visuell.score} — ${sub.visuell.begruendung}`,
+    `- Schmerzpunkt: ${sub.schmerz.score} — ${sub.schmerz.begruendung}`,
+    "",
+    "## Pain-Match (Kapital × Lösbarkeit)",
+    `- Einstufung: ${lead.painMatch.level}`,
+    `- ${lead.painMatch.begruendung}`,
+    "",
+    "## Im Erstkontakt pruefen (nicht scrapebar)",
+    "- Konkreter Anlass / Phase (Launch, Event, Recruiting): unbekannt",
+    "- Entscheider direkt erreichbar: unbekannt",
+    "- Bereit, Gesicht zu zeigen: unbekannt",
+    "- Langfristige Bindung: unbekannt",
+    "- Keine Chaos-Signale: unbekannt",
     "",
     "## Kontakt",
     `- Instagram: ${ig}`,
@@ -72,9 +91,6 @@ export function leadToMarkdown(lead: Lead): string {
     `- Website: ${lead.website ?? "keine"}`,
     `- Adresse: ${lead.address}`,
     lead.googleMapsUri ? `- Google Maps: ${lead.googleMapsUri}` : "",
-    "",
-    "## Daten",
-    `- Branche: ${lead.branchLabel}`,
     typeof lead.rating === "number"
       ? `- Google: ${lead.rating} Sterne bei ${lead.reviewCount ?? 0} Bewertungen`
       : "",
@@ -91,9 +107,7 @@ export function leadToMarkdown(lead: Lead): string {
 
 function quoteYaml(value: string): string {
   if (value === "") return '""';
-  if (/[:#\[\]{}",]/.test(value)) {
-    return `"${value.replace(/"/g, '\\"')}"`;
-  }
+  if (/[:#[\]{}",]/.test(value)) return `"${value.replace(/"/g, '\\"')}"`;
   return value;
 }
 

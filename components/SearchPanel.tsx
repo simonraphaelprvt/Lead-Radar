@@ -13,33 +13,53 @@ interface SearchPanelProps {
   origin: { lat: number; lng: number } | null;
   resultCount: number;
   errors: string[];
-  onEnrichAll: () => void;
-  enriching: boolean;
   onExportCsv: () => void;
+  filterChains: boolean;
+  onToggleChains: () => void;
 }
 
+// "low" (niedrige Zahlungskraft) bewusst NICHT mehr anbieten.
 const GROUP_LABELS: Record<string, string> = {
-  core: "KERNBRANCHEN",
-  adjacent: "ANGRENZEND",
-  low: "NIEDRIGE ZAHLUNGSKRAFT",
+  core: "Kernbranchen",
+  adjacent: "Angrenzend",
+  b2b: "B2B",
 };
+const GROUP_ORDER = ["core", "adjacent", "b2b"] as const;
+
+function Switch({ on, onClick }: { on: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      role="switch"
+      aria-checked={on}
+      className={`relative h-[18px] w-8 shrink-0 rounded-full transition-colors ${
+        on ? "bg-phosphor" : "bg-terminal-panel-2 border border-terminal-border"
+      }`}
+    >
+      <span
+        className={`absolute top-1/2 h-3.5 w-3.5 -translate-y-1/2 rounded-full bg-white transition-all ${
+          on ? "left-[15px]" : "left-[2px]"
+        }`}
+      />
+    </button>
+  );
+}
 
 export default function SearchPanel(props: SearchPanelProps) {
   const cats = categoriesForUI();
-  const groups: Record<string, typeof cats> = { core: [], adjacent: [], low: [] };
-  for (const c of cats) groups[c.group].push(c);
+  const groups: Record<string, typeof cats> = { core: [], adjacent: [], b2b: [] };
+  for (const c of cats) if (c.group in groups) groups[c.group].push(c);
 
   return (
-    <div className="panel corner-brackets w-[300px] max-h-[calc(100vh-110px)] overflow-y-auto p-3 text-sm">
-      <div className="text-[11px] tracking-widest text-phosphor mb-2 glow-text">
-        ⊹ SUCH-PARAMETER
+    <div className="panel w-[300px] max-h-[calc(100vh-104px)] overflow-y-auto rounded-xl p-4 text-sm shadow-2xl">
+      <div className="mb-3 text-[11px] font-medium uppercase tracking-wide text-phosphor-muted">
+        Suchparameter
       </div>
 
-      {/* Position */}
-      <div className="mb-3 text-[10px] text-phosphor-muted">
-        ZIELPUNKT:{" "}
+      <div className="mb-4 text-[11px] text-phosphor-muted">
+        Zielpunkt:{" "}
         {props.origin ? (
-          <span className="text-phosphor-text tabular-nums">
+          <span className="font-mono text-phosphor-text tabular-nums">
             {props.origin.lat.toFixed(4)}, {props.origin.lng.toFixed(4)}
           </span>
         ) : (
@@ -47,11 +67,10 @@ export default function SearchPanel(props: SearchPanelProps) {
         )}
       </div>
 
-      {/* Radius */}
       <div className="mb-4">
-        <div className="flex justify-between text-[10px] tracking-widest text-phosphor-muted mb-1">
-          <span>RADIUS</span>
-          <span className="text-phosphor-text tabular-nums">{props.radiusKm} km</span>
+        <div className="mb-1.5 flex justify-between text-[11px] text-phosphor-muted">
+          <span>Radius</span>
+          <span className="font-mono text-phosphor-text tabular-nums">{props.radiusKm} km</span>
         </div>
         <input
           type="range"
@@ -60,31 +79,39 @@ export default function SearchPanel(props: SearchPanelProps) {
           step={1}
           value={props.radiusKm}
           onChange={(e) => props.onRadius(Number(e.target.value))}
-          className="w-full accent-[#39ff8b]"
+          className="w-full accent-[#6E92C9]"
         />
       </div>
 
-      {/* Kategorien */}
-      <div className="mb-3">
-        <div className="text-[10px] tracking-widest text-phosphor-muted mb-2">
-          BRANCHEN ({props.selected.length})
+      {/* Ketten-Filter */}
+      <div className="mb-4 flex items-center justify-between rounded-md border border-terminal-border px-3 py-2">
+        <div>
+          <div className="text-[12px] text-phosphor-text">Ketten ausblenden</div>
+          <div className="text-[10px] text-phosphor-dimtext">Filialen & Franchise als RAUS</div>
         </div>
-        {(["core", "adjacent", "low"] as const).map((g) => (
-          <div key={g} className="mb-2">
-            <div className="text-[9px] tracking-widest text-phosphor-dim mb-1">
+        <Switch on={props.filterChains} onClick={props.onToggleChains} />
+      </div>
+
+      <div className="mb-4">
+        <div className="mb-2 text-[11px] text-phosphor-muted">
+          Branchen ({props.selected.length})
+        </div>
+        {GROUP_ORDER.map((g) => (
+          <div key={g} className="mb-2.5">
+            <div className="mb-1.5 text-[9px] uppercase tracking-wide text-phosphor-dimtext">
               {GROUP_LABELS[g]}
             </div>
-            <div className="flex flex-wrap gap-1">
+            <div className="flex flex-wrap gap-1.5">
               {groups[g].map((c) => {
                 const on = props.selected.includes(c.id);
                 return (
                   <button
                     key={c.id}
                     onClick={() => props.onToggle(c.id)}
-                    className={`px-2 py-1 text-[10px] border transition-colors ${
+                    className={`rounded-md px-2 py-1 text-[11px] transition-colors ${
                       on
-                        ? "border-phosphor text-phosphor bg-phosphor-dim/20"
-                        : "border-terminal-border text-phosphor-muted hover:border-phosphor-dim"
+                        ? "bg-phosphor-dim/40 text-phosphor-text"
+                        : "border border-terminal-border text-phosphor-muted hover:text-phosphor-text"
                     }`}
                   >
                     {c.label}
@@ -96,42 +123,31 @@ export default function SearchPanel(props: SearchPanelProps) {
         ))}
       </div>
 
-      {/* Scan */}
       <button
         onClick={props.onScan}
         disabled={props.scanning || !props.origin || props.selected.length === 0}
-        className="w-full py-2 mb-2 text-xs tracking-[0.25em] font-bold border border-phosphor text-phosphor hover:bg-phosphor-dim/25 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        className="mb-2 w-full rounded-lg py-2.5 text-[13px] font-medium text-white transition-colors bg-phosphor hover:brightness-110 disabled:bg-terminal-panel-2 disabled:text-phosphor-muted disabled:cursor-not-allowed"
       >
-        {props.scanning ? "◈ SCANNE GEBIET ..." : "▶ SCAN STARTEN"}
+        {props.scanning ? "Scanne Gebiet …" : "Scan starten"}
       </button>
 
-      {/* Aktionen nach Scan */}
       {props.resultCount > 0 && (
-        <div className="flex gap-2">
-          <button
-            onClick={props.onEnrichAll}
-            disabled={props.enriching}
-            className="flex-1 py-1.5 text-[10px] tracking-widest border border-terminal-border text-phosphor-muted hover:border-phosphor-dim hover:text-phosphor-text disabled:opacity-40"
-          >
-            {props.enriching ? "ANREICHERN ..." : "⊕ INSTAGRAM-BATCH"}
-          </button>
-          <button
-            onClick={props.onExportCsv}
-            className="flex-1 py-1.5 text-[10px] tracking-widest border border-terminal-border text-phosphor-muted hover:border-phosphor-dim hover:text-phosphor-text"
-          >
-            ⤓ CSV
-          </button>
-        </div>
+        <button
+          onClick={props.onExportCsv}
+          className="w-full rounded-md border border-terminal-border py-1.5 text-[11px] text-phosphor-muted hover:text-phosphor-text"
+        >
+          ↓ CSV exportieren
+        </button>
       )}
 
       {props.resultCount > 0 && (
-        <div className="mt-2 text-[10px] text-phosphor-muted">
-          {props.resultCount} Treffer im Cache.
+        <div className="mt-2 text-[11px] text-phosphor-muted">
+          {props.resultCount} qualifizierte Treffer.
         </div>
       )}
 
       {props.errors.length > 0 && (
-        <div className="mt-2 text-[10px] text-status-hot/80">
+        <div className="mt-2 space-y-0.5 text-[11px] text-status-hot/80">
           {props.errors.slice(0, 3).map((e, i) => (
             <div key={i}>! {e}</div>
           ))}

@@ -1,6 +1,7 @@
 "use client";
 
 import ViewSwitcher, { type AppView } from "./ViewSwitcher";
+import { PAIN_COLOR } from "./Badges";
 
 interface HudProps {
   view: AppView;
@@ -9,7 +10,10 @@ interface HudProps {
   hot: number;
   warm: number;
   cold: number;
-  apiCalls: number;
+  raus: number;
+  painHoch: number;
+  painMittel: number;
+  painNiedrig: number;
   pipeline: number;
   scanning: boolean;
 }
@@ -17,17 +21,33 @@ interface HudProps {
 function Stat({
   label,
   value,
-  color = "var(--phosphor-text)",
+  color = "var(--text)",
 }: {
   label: string;
   value: number | string;
   color?: string;
 }) {
   return (
-    <div className="px-3 border-l border-terminal-border first:border-l-0">
-      <div className="text-[9px] tracking-widest text-phosphor-muted">{label}</div>
-      <div className="text-base font-bold tabular-nums" style={{ color }}>
+    <div className="px-3.5 border-l border-terminal-border first:border-l-0">
+      <div className="text-[9px] tracking-wide text-phosphor-muted">{label}</div>
+      <div className="font-mono text-[15px] font-semibold tabular-nums" style={{ color }}>
         {value}
+      </div>
+    </div>
+  );
+}
+
+/** Pain-Match-Gruppe: drei Werte unter einem Label, abgesetzt vom Einstufungs-Block. */
+function PainGroup({ hoch, mittel, niedrig }: { hoch: number; mittel: number; niedrig: number }) {
+  return (
+    <div className="ml-1 flex flex-col justify-center border-l border-terminal-border pl-3.5">
+      <div className="text-[9px] tracking-wide text-phosphor-muted">PAIN-MATCH</div>
+      <div className="flex items-center gap-2 font-mono text-[15px] font-semibold tabular-nums leading-none">
+        <span style={{ color: PAIN_COLOR.hoch }} title="Pain-Match Hoch">{hoch}</span>
+        <span className="text-[10px] text-phosphor-dimtext">/</span>
+        <span style={{ color: PAIN_COLOR.mittel }} title="Pain-Match Mittel">{mittel}</span>
+        <span className="text-[10px] text-phosphor-dimtext">/</span>
+        <span style={{ color: PAIN_COLOR.niedrig }} title="Pain-Match Niedrig">{niedrig}</span>
       </div>
     </div>
   );
@@ -35,31 +55,30 @@ function Stat({
 
 export default function Hud(props: HudProps) {
   return (
-    <header className="panel relative z-20 flex items-center justify-between gap-4 px-4 py-2 border-b">
+    <header className="panel relative z-20 flex items-center justify-between gap-4 px-4 py-2.5 border-b">
       <div className="flex items-center gap-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2.5">
           <span
-            className={`inline-block w-2.5 h-2.5 rounded-full ${
-              props.scanning ? "bg-status-hot blink" : "bg-phosphor"
-            }`}
-            style={{ boxShadow: "0 0 8px currentColor" }}
+            className="inline-block h-2 w-2 rounded-full transition-colors"
+            style={{ background: props.scanning ? "var(--accent)" : "var(--dim)" }}
           />
-          <span className="text-lg font-bold tracking-[0.3em] text-phosphor glow-text">
-            LEAD&nbsp;RADAR
+          <span className="text-[15px] font-semibold tracking-tight text-phosphor-text">
+            Lead Radar
           </span>
         </div>
-        <span className="hidden md:inline text-[10px] tracking-widest text-phosphor-muted">
-          {props.scanning ? "// SCAN LÄUFT ..." : "// COMMAND-CENTER"}
+        <span className="hidden md:inline text-[11px] text-phosphor-muted">
+          {props.scanning ? "Scan läuft …" : "Signalbasierte Qualifizierung"}
         </span>
       </div>
 
-      <div className="flex items-center gap-1">
+      <div className="flex items-center">
         <Stat label="GESCANNT" value={props.scanned} />
         <Stat label="HOT" value={props.hot} color="var(--hot)" />
         <Stat label="WARM" value={props.warm} color="var(--warm)" />
         <Stat label="COLD" value={props.cold} color="var(--cold)" />
-        <Stat label="API CALLS" value={props.apiCalls} color="#37c0ff" />
-        <Stat label="PIPELINE" value={props.pipeline} color="var(--phosphor)" />
+        <Stat label="RAUS" value={props.raus} color="var(--dim)" />
+        <PainGroup hoch={props.painHoch} mittel={props.painMittel} niedrig={props.painNiedrig} />
+        <Stat label="PIPELINE" value={props.pipeline} color="var(--accent)" />
       </div>
 
       <ViewSwitcher view={props.view} onChange={props.onViewChange} />

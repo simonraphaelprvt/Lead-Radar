@@ -1,8 +1,22 @@
 // ====================================================================
 // Zentrale Typen fuer Lead Radar
+// --------------------------------------------------------------------
+// Seit Reasoning-Engine v2: ein Lead traegt die signalbasierte Bewertung
+// (einstufung/tier/substanz/ko) direkt. Die alten pay/need/fit-Scores sind
+// entfallen (sie beruhten auf geratenen Branchenwerten).
 // ====================================================================
 
-export type LeadRating = "HOT" | "WARM" | "COLD";
+import type {
+  Tier,
+  Einstufung,
+  Empfehlung,
+  CheckStatus,
+  Teilscore,
+  PainMatch,
+  PainMatchResult,
+} from "./reasoning";
+
+export type { Tier, Einstufung, Empfehlung, CheckStatus, Teilscore, PainMatch, PainMatchResult };
 
 export type PipelineStatus =
   | "Neu"
@@ -14,81 +28,87 @@ export type PipelineStatus =
 /**
  * Instagram-Anreicherungszustand:
  *  - undefined  = noch nicht geprueft
- *  - null       = geprueft, kein Account gefunden (ehrlich "nicht gefunden", nie raten)
+ *  - null       = geprueft, kein Account gefunden
  *  - string     = gefundener Profil-Link
  */
 export type InstagramState = string | null | undefined;
 
-/** Die drei Teil-Scores plus Gesamtbewertung. */
-export interface LeadScore {
-  /** Zahlungskraft 0..100 */
-  pay: number;
-  /** Bedarf 0..100 */
-  need: number;
-  /** Branchen-Fit 0..100 */
-  fit: number;
-  /** Gesamt-Score 0..100 */
-  final: number;
-  rating: LeadRating;
-}
-
-/** Ein gefundenes Business inklusive Bewertung. Zentrale Datenstruktur der App. */
+/** Ein gefundenes Business inkl. signalbasierter Bewertung. Zentrale Datenstruktur. */
 export interface Lead {
-  id: string; // Google Place ID
+  id: string;
   name: string;
   address: string;
   lat: number;
   lng: number;
-  rating?: number; // Google Sterne-Schnitt
-  reviewCount?: number;
+
+  // ---- Kontakt / Anzeige (real aus den Daten) ----
   website?: string;
   phone?: string;
   googleMapsUri?: string;
-  primaryType?: string;
-  primaryTypeDisplay?: string;
-  priceLevel?: string; // z.B. "PRICE_LEVEL_EXPENSIVE"
   openingHours?: string[];
-  businessStatus?: string; // "OPERATIONAL" etc.
-
-  categoryId: string; // Suchkategorie (Treiber fuer Branche/Scoring)
-  branchLabel: string; // menschenlesbare Branche
-
+  /** Website-Vorschaubild (og:image), per Anreicherung. */
+  imageUrl?: string | null;
+  /** Standort-Foto (Google Place/Street View), Proxy-URL. undefined = noch nicht geholt. */
+  photoUrl?: string | null;
   instagram?: InstagramState;
-  /** Manueller Haken: "sucht aktiv Social-Media-Personal" (extern recherchiert). Hebt den Score an. */
+
+  // ---- Rohsignale, die in die Bewertung geflossen sind ----
+  categoryLabel: string;
+  rating?: number | null;
+  reviewCount?: number | null;
+  priceLevel?: number | null;
+  photoCount?: number | null;
+  types?: string[];
+
+  // ---- Reasoning-Engine v2 ----
+  einstufung: Einstufung; // HOT | WARM | COLD | RAUS
+  tier: Tier; // A | B | C
+  tierCOnHold: boolean;
+  substanzScore: number; // 0..100
+  /** Zweite Achse: Pain-Match (Kapital x Loesbarkeit), neben der Einstufung. */
+  painMatch: PainMatchResult;
+  koAusgeschlossen: boolean;
+  koGrund: string | null;
+  empfehlung: Empfehlung; // kontaktieren | spaeter | raus
+  begruendungKurz: string;
+  /** Die drei scrapebaren Teilscores mit Signalen + Begruendung. */
+  substanz: {
+    finanzielle: Teilscore;
+    visuell: Teilscore;
+    schmerz: Teilscore;
+  };
+  /** Checkliste "im Erstkontakt pruefen" - immer "unbekannt", nie gescort. */
+  erstkontakt: {
+    entscheider_erreichbar: CheckStatus;
+    gesicht_zeigen: CheckStatus;
+    langfristig: CheckStatus;
+    chaos_signale: CheckStatus;
+  };
+
+  /** Manueller Haken: "sucht aktiv Social-Media-Personal". */
   indeedFlag?: boolean;
 
-  score: LeadScore;
-
-  // Pipeline-Felder (gesetzt, sobald in Notion)
+  // ---- Pipeline-Felder (gesetzt, sobald in Notion) ----
   notionPageId?: string;
   status?: PipelineStatus;
   notes?: string;
   addedAt?: string; // ISO
 }
 
-/** Eingabe fuer das Scoring-Modul. */
-export interface ScoreInput {
-  categoryId: string;
-  priceLevel?: string;
-  reviewCount?: number;
-  rating?: number;
-  website?: string | null;
-  instagram?: InstagramState;
-  indeedFlag?: boolean;
-}
-
-/** Request-Payload an /api/places */
-export interface PlacesRequest {
+/** Request-Payload an /api/scan */
+export interface ScanRequest {
   lat: number;
   lng: number;
   radiusKm: number;
   categories: string[];
+  /** Ketten/Filialen als KO ausschliessen (Default true). */
+  filterChains?: boolean;
 }
 
-/** Response von /api/places */
-export interface PlacesResponse {
+/** Response von /api/scan */
+export interface ScanResponse {
   leads: Lead[];
-  requestCount: number; // Anzahl tatsaechlicher Google-API-Calls
+  count: number;
   errors: string[];
 }
 

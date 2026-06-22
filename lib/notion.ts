@@ -7,7 +7,7 @@
 // ====================================================================
 
 import { NOTION_PROPS } from "./constants";
-import type { Lead, LeadRating, PipelineStatus } from "./types";
+import type { Lead, Einstufung, Empfehlung, PipelineStatus } from "./types";
 
 const NOTION_BASE = "https://api.notion.com/v1";
 const NOTION_VERSION = "2022-06-28";
@@ -58,18 +58,20 @@ export function leadToProperties(lead: Lead): Record<string, unknown> {
   return {
     [P.name]: title(lead.name),
     [P.status]: select(lead.status ?? "Neu"),
-    [P.rating]: select(lead.score.rating),
-    [P.score]: num(lead.score.final),
-    [P.need]: num(lead.score.need),
-    [P.pay]: num(lead.score.pay),
-    [P.fit]: num(lead.score.fit),
-    [P.branch]: richText(lead.branchLabel),
+    // Bewertung = Einstufung, Score = Substanz. Die Legacy-Zahlenspalten
+    // (Zahlungskraft/Bedarf/Fit) tragen jetzt die drei Substanz-Teilscores.
+    [P.rating]: select(lead.einstufung),
+    [P.score]: num(lead.substanzScore),
+    [P.pay]: num(lead.substanz.finanzielle.score),
+    [P.need]: num(lead.substanz.schmerz.score),
+    [P.fit]: num(lead.substanz.visuell.score),
+    [P.branch]: richText(lead.categoryLabel),
     [P.instagram]: url(typeof lead.instagram === "string" ? lead.instagram : null),
     [P.phone]: phone(lead.phone),
     [P.website]: url(lead.website ?? null),
     [P.address]: richText(lead.address),
     [P.googleMaps]: url(lead.googleMapsUri ?? null),
-    [P.reviewCount]: num(lead.reviewCount),
+    [P.reviewCount]: num(lead.reviewCount ?? undefined),
     [P.notes]: richText(lead.notes),
     [P.addedAt]: date(lead.addedAt ?? new Date().toISOString()),
   };
@@ -121,8 +123,14 @@ function readPhone(prop: any): string | undefined {
 /** Eine Notion-Page in ein (Teil-)Lead-Objekt fuer das Pipeline-Board uebersetzen. */
 export function pageToLead(page: NotionPage): Lead {
   const props = page.properties;
-  const rating = (readSelect(props[P.rating]) as LeadRating) ?? "COLD";
+  const einstufung = (readSelect(props[P.rating]) as Einstufung) ?? "COLD";
   const status = (readSelect(props[P.status]) as PipelineStatus) ?? "Neu";
+  const fin = readNumber(props[P.pay]) ?? 0;
+  const schmerz = readNumber(props[P.need]) ?? 0;
+  const vis = readNumber(props[P.fit]) ?? 0;
+  const empfehlung: Empfehlung =
+    einstufung === "RAUS" ? "raus" : einstufung === "COLD" ? "spaeter" : "kontaktieren";
+  const leer = { signale: [] as string[], begruendung: "" };
   return {
     id: page.id,
     notionPageId: page.id,
@@ -130,23 +138,48 @@ export function pageToLead(page: NotionPage): Lead {
     address: readText(props[P.address]),
     lat: 0,
     lng: 0,
-    rating: undefined,
-    reviewCount: readNumber(props[P.reviewCount]),
     website: readUrl(props[P.website]),
     phone: readPhone(props[P.phone]),
     googleMapsUri: readUrl(props[P.googleMaps]),
-    branchLabel: readText(props[P.branch]),
-    categoryId: "unknown",
+    imageUrl: undefined,
+    photoUrl: undefined,
     instagram: readUrl(props[P.instagram]) ?? undefined,
+    categoryLabel: readText(props[P.branch]),
+    rating: null,
+    reviewCount: readNumber(props[P.reviewCount]) ?? null,
+    priceLevel: null,
+    photoCount: null,
+    types: [],
+    einstufung,
+    tier: "B",
+    tierCOnHold: false,
+    substanzScore: readNumber(props[P.score]) ?? 0,
+    // Pain-Match wird nicht in Notion gespeichert (Scan-Qualifier, kein Pipeline-Feld).
+    painMatch: {
+      level: "niedrig",
+      kapital_score: 0,
+      kapital_signale: [],
+      loesbar: vis >= 45,
+      anlass_status: "unbekannt",
+      begruendung: "aus Pipeline geladen - Pain-Match nicht gespeichert",
+    },
+    koAusgeschlossen: einstufung === "RAUS",
+    koGrund: null,
+    empfehlung,
+    begruendungKurz: "",
+    substanz: {
+      finanzielle: { score: fin, ...leer },
+      visuell: { score: vis, ...leer },
+      schmerz: { score: schmerz, ...leer },
+    },
+    erstkontakt: {
+      entscheider_erreichbar: "unbekannt",
+      gesicht_zeigen: "unbekannt",
+      langfristig: "unbekannt",
+      chaos_signale: "unbekannt",
+    },
     status,
     notes: readText(props[P.notes]),
-    score: {
-      pay: readNumber(props[P.pay]) ?? 0,
-      need: readNumber(props[P.need]) ?? 0,
-      fit: readNumber(props[P.fit]) ?? 0,
-      final: readNumber(props[P.score]) ?? 0,
-      rating,
-    },
   };
 }
 

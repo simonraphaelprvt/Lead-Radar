@@ -2,12 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
-import type { Lead, PipelineStatus } from "@/lib/types";
-import { scoreLead } from "@/lib/scoring";
+import type { Lead, Einstufung, PipelineStatus } from "@/lib/types";
+import { qualify, type BusinessSignals } from "@/lib/reasoning";
 import { APP_CONFIG, STORAGE_KEYS } from "@/lib/constants";
 import { leadsToCsv, downloadFile } from "@/lib/exporters";
 
-import BootSequence from "@/components/BootSequence";
 import Hud from "@/components/Hud";
 import SearchPanel from "@/components/SearchPanel";
 import LeadList from "@/components/LeadList";
@@ -18,15 +17,14 @@ import type { AppView } from "@/components/ViewSwitcher";
 const MapView = dynamic(() => import("@/components/MapView"), {
   ssr: false,
   loading: () => (
-    <div className="h-full w-full grid place-items-center text-phosphor-muted text-xs tracking-widest">
-      ⊹ KARTE WIRD GELADEN ...
+    <div className="h-full w-full grid place-items-center text-phosphor-muted text-xs">
+      Karte wird geladen …
     </div>
   ),
 });
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// ---- localStorage Helfer (clientseitig) ----
 function readJson<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
@@ -39,15 +37,86 @@ function writeJson(key: string, value: unknown) {
   try {
     localStorage.setItem(key, JSON.stringify(value));
   } catch {
-    /* Speicher voll / privat - ignorieren */
+    /* ignorieren */
   }
 }
 
-type EnrichCache = Record<string, string | null>;
 type ScanCache = Record<string, { ts: number; leads: Lead[] }>;
 
+/** Pro Lead gecachte Google-Kontaktdaten + Standort-Foto (beim Oeffnen geholt). */
+type GoogleEntry = {
+  phone: string | null;
+  address: string | null;
+  openingHours: string[] | null;
+  googleMapsUri: string | null;
+  photoUrl: string | null;
+};
+type GoogleCache = Record<string, GoogleEntry>;
+
+/** Google-Kontaktdaten in einen Lead fuellen (nur Luecken, KEIN Einfluss auf
+ *  die Engine-Bewertung - die steht beim Scan fest). */
+function mergeGoogle(lead: Lead, g: GoogleEntry): Lead {
+  return {
+    ...lead,
+    photoUrl: g.photoUrl,
+    phone: lead.phone ?? g.phone ?? undefined,
+    address: lead.address || g.address || "",
+    openingHours:
+      lead.openingHours && lead.openingHours.length > 0 ? lead.openingHours : g.openingHours ?? undefined,
+    googleMapsUri: g.googleMapsUri ?? lead.googleMapsUri,
+  };
+}
+
+const RANK: Record<Einstufung, number> = { HOT: 0, WARM: 1, COLD: 2, RAUS: 3 };
+function sortClient(list: Lead[]): Lead[] {
+  return [...list].sort((a, b) => {
+    const r = RANK[a.einstufung] - RANK[b.einstufung];
+    if (r !== 0) return r;
+    if (a.tierCOnHold !== b.tierCOnHold) return a.tierCOnHold ? 1 : -1;
+    return b.substanzScore - a.substanzScore;
+  });
+}
+
+/** Re-Qualifiziert einen Lead live im Browser (alle Signale stecken im Lead) -
+ *  z.B. wenn der Ketten-Filter umgeschaltet wird. Die Engine ist rein. */
+function requalify(l: Lead, filterChains: boolean): Lead {
+  const s: BusinessSignals = {
+    name: l.name,
+    categoryLabel: l.categoryLabel,
+    types: l.types,
+    rating: l.rating,
+    reviewCount: l.reviewCount,
+    priceLevel: l.priceLevel,
+    photoCount: l.photoCount,
+    website: l.website ?? null,
+    hasSocial: null,
+    phone: l.phone ?? null,
+    address: l.address,
+    lat: l.lat,
+    lng: l.lng,
+  };
+  const q = qualify(s, { filterChains });
+  return {
+    ...l,
+    einstufung: q.einstufung,
+    tier: q.tier,
+    tierCOnHold: q.tier_c_on_hold,
+    substanzScore: q.substanz_score,
+    painMatch: q.pain_match,
+    koAusgeschlossen: q.ko_ausgeschlossen,
+    koGrund: q.ko_grund,
+    empfehlung: q.empfehlung,
+    begruendungKurz: q.begruendung_kurz,
+    substanz: {
+      finanzielle: q.scrapebare_bewertung.finanzielle_substanz,
+      visuell: q.scrapebare_bewertung.visuell_darstellbar,
+      schmerz: q.scrapebare_bewertung.schmerzpunkt,
+    },
+    erstkontakt: q.im_erstkontakt_pruefen,
+  };
+}
+
 export default function Page() {
-  const [booting, setBooting] = useState(true);
   const [view, setView] = useState<AppView>("map");
 
   const [origin, setOrigin] = useState<{ lat: number; lng: number } | null>(
@@ -56,19 +125,18 @@ export default function Page() {
   const [radiusKm, setRadiusKm] = useState(APP_CONFIG.DEFAULT_RADIUS_KM);
   const [categories, setCategories] = useState<string[]>([
     "restaurant",
-    "autohaus",
+    "hotel",
     "fitness",
-    "friseur",
+    "beauty",
   ]);
 
   const [leads, setLeads] = useState<Lead[]>([]);
   const [selected, setSelected] = useState<Lead | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanErrors, setScanErrors] = useState<string[]>([]);
-  const [requestCount, setRequestCount] = useState(0);
-
-  const [enriching, setEnriching] = useState(false);
-  const [enrichingId, setEnrichingId] = useState<string | null>(null);
+  const [googleEnabled, setGoogleEnabled] = useState<boolean | null>(null);
+  // Ketten/Filialen ausschliessen (umschaltbar, wirkt live + beim naechsten Scan).
+  const [filterChains, setFilterChains] = useState(true);
 
   const [pipeline, setPipeline] = useState<Lead[]>([]);
   const [pipelineLoading, setPipelineLoading] = useState(false);
@@ -77,53 +145,33 @@ export default function Page() {
   const [addingToPipeline, setAddingToPipeline] = useState(false);
   const [pipelineActionError, setPipelineActionError] = useState<string | null>(null);
 
-  // ---- Init aus localStorage ----
+  const displayLeads = leads;
+
+  // ---- Init / Persistenz UI-State ----
   useEffect(() => {
     const ui = readJson(STORAGE_KEYS.ui, null as null | {
       radiusKm: number;
       categories: string[];
       view: AppView;
       origin: { lat: number; lng: number } | null;
+      filterChains: boolean;
     });
     if (ui) {
       if (typeof ui.radiusKm === "number") setRadiusKm(ui.radiusKm);
       if (Array.isArray(ui.categories)) setCategories(ui.categories);
       if (ui.view) setView(ui.view);
       if (ui.origin) setOrigin(ui.origin);
+      if (typeof ui.filterChains === "boolean") setFilterChains(ui.filterChains);
     }
-    setRequestCount(readJson(STORAGE_KEYS.requestCount, 0));
   }, []);
-
-  // ---- UI-State persistieren ----
   useEffect(() => {
-    writeJson(STORAGE_KEYS.ui, { radiusKm, categories, view, origin });
-  }, [radiusKm, categories, view, origin]);
-  useEffect(() => {
-    writeJson(STORAGE_KEYS.requestCount, requestCount);
-  }, [requestCount]);
-
-  // ---- Scoring-Helfer ----
-  const rescore = useCallback((lead: Lead): Lead => {
-    return {
-      ...lead,
-      score: scoreLead({
-        categoryId: lead.categoryId,
-        priceLevel: lead.priceLevel,
-        reviewCount: lead.reviewCount,
-        rating: lead.rating,
-        website: lead.website ?? null,
-        instagram: lead.instagram,
-        indeedFlag: lead.indeedFlag,
-      }),
-    };
-  }, []);
+    writeJson(STORAGE_KEYS.ui, { radiusKm, categories, view, origin, filterChains });
+  }, [radiusKm, categories, view, origin, filterChains]);
 
   const setLeadEverywhere = useCallback((updated: Lead) => {
     setLeads((prev) => prev.map((l) => (l.id === updated.id ? updated : l)));
     setPipeline((prev) =>
-      prev.map((l) =>
-        l.notionPageId && l.notionPageId === updated.notionPageId ? updated : l,
-      ),
+      prev.map((l) => (l.notionPageId && l.notionPageId === updated.notionPageId ? updated : l)),
     );
     setSelected((prev) =>
       prev &&
@@ -134,130 +182,110 @@ export default function Page() {
     );
   }, []);
 
-  // ---- Scan ----
+  // ---- Scan (Server: Google Bulk-Qualify + Reasoning-Engine) ----
   const handleScan = useCallback(async () => {
     if (!origin || categories.length === 0 || scanning) return;
     setScanErrors([]);
     const cats = [...categories].sort();
-    const key = `${origin.lat.toFixed(4)},${origin.lng.toFixed(4)},${radiusKm},${cats.join("+")}`;
+    const key = `v3|${origin.lat.toFixed(4)},${origin.lng.toFixed(4)},${radiusKm},${cats.join("+")}`;
 
     setScanning(true);
     const started = Date.now();
-    const enrichCache = readJson<EnrichCache>(STORAGE_KEYS.enrichCache, {});
-    const applyEnrich = (list: Lead[]) =>
-      list.map((l) =>
-        l.id in enrichCache ? rescore({ ...l, instagram: enrichCache[l.id] }) : l,
-      );
+    const googleCache = readJson<GoogleCache>(STORAGE_KEYS.googleCache, {});
+    const applyGoogle = (list: Lead[]) =>
+      list.map((l) => (l.id in googleCache ? mergeGoogle(l, googleCache[l.id]) : l));
 
     try {
       const cache = readJson<ScanCache>(STORAGE_KEYS.scanCache, {});
       const hit = cache[key];
       if (hit && Date.now() - hit.ts < APP_CONFIG.CACHE_TTL_MS) {
-        // Cache-Treffer: kein API-Call.
-        setLeads(applyEnrich(hit.leads));
-        await sleep(Math.max(0, 900 - (Date.now() - started)));
+        setLeads(applyGoogle(hit.leads));
+        await sleep(Math.max(0, 600 - (Date.now() - started)));
       } else {
         const res = await fetch("/api/places", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ lat: origin.lat, lng: origin.lng, radiusKm, categories: cats }),
+          body: JSON.stringify({ lat: origin.lat, lng: origin.lng, radiusKm, categories: cats, filterChains }),
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error ?? "Scan fehlgeschlagen.");
         const fresh: Lead[] = data.leads ?? [];
-        setLeads(applyEnrich(fresh));
-        setScanErrors(data.errors ?? []);
-        setRequestCount((c) => c + (data.requestCount ?? 0));
-        // Cache schreiben (max 20 Eintraege halten)
-        const next: ScanCache = { ...cache, [key]: { ts: Date.now(), leads: fresh } };
-        const keys = Object.keys(next);
-        if (keys.length > 20) {
-          keys
-            .sort((a, b) => next[a].ts - next[b].ts)
-            .slice(0, keys.length - 20)
-            .forEach((k) => delete next[k]);
+        setLeads(applyGoogle(fresh));
+        if (fresh.length === 0 && (data.errors?.length ?? 0) === 0) {
+          setScanErrors(["Keine Treffer. Radius vergroessern oder andere Branchen waehlen."]);
+        } else {
+          setScanErrors(data.errors ?? []);
         }
-        writeJson(STORAGE_KEYS.scanCache, next);
-        await sleep(Math.max(0, 1400 - (Date.now() - started)));
+        if (fresh.length > 0) {
+          const next: ScanCache = { ...cache, [key]: { ts: Date.now(), leads: fresh } };
+          const keys = Object.keys(next);
+          if (keys.length > 20) {
+            keys.sort((a, b) => next[a].ts - next[b].ts).slice(0, keys.length - 20).forEach((k) => delete next[k]);
+          }
+          writeJson(STORAGE_KEYS.scanCache, next);
+        }
+        await sleep(Math.max(0, 1000 - (Date.now() - started)));
       }
     } catch (e) {
       setScanErrors([(e as Error).message]);
     } finally {
       setScanning(false);
     }
-  }, [origin, categories, radiusKm, scanning, rescore]);
+  }, [origin, categories, radiusKm, scanning, filterChains]);
 
-  // ---- Anreicherung (einzeln) ----
-  const handleEnrichOne = useCallback(
+  // Ketten-Filter umschalten -> Leads live neu qualifizieren (kein Re-Scan noetig).
+  const handleToggleChains = useCallback(() => {
+    setFilterChains((prev) => {
+      const next = !prev;
+      setLeads((ls) => sortClient(ls.map((l) => requalify(l, next))));
+      setSelected((sel) => (sel ? requalify(sel, next) : sel));
+      return next;
+    });
+  }, []);
+
+  // ---- Google-Anreicherung beim Oeffnen eines Leads (Foto + Oeffnungszeiten) ----
+  const handleEnrichGoogle = useCallback(
     async (lead: Lead) => {
-      if (!lead.website) return;
-      setEnrichingId(lead.id);
+      if (lead.photoUrl !== undefined) return;
+      if (googleEnabled === false) {
+        setLeadEverywhere({ ...lead, photoUrl: null });
+        return;
+      }
       try {
-        const res = await fetch("/api/enrich", {
+        const res = await fetch("/api/google", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ items: [{ id: lead.id, website: lead.website }] }),
+          body: JSON.stringify({ name: lead.name, lat: lead.lat, lng: lead.lng, address: lead.address }),
         });
         const data = await res.json();
-        const ig: string | null = data.results?.[0]?.instagram ?? null;
-        const cache = readJson<EnrichCache>(STORAGE_KEYS.enrichCache, {});
-        cache[lead.id] = ig;
-        writeJson(STORAGE_KEYS.enrichCache, cache);
-        setLeadEverywhere(rescore({ ...lead, instagram: ig }));
+        if (data.configured === false) {
+          setGoogleEnabled(false);
+          setLeadEverywhere({ ...lead, photoUrl: null });
+          return;
+        }
+        setGoogleEnabled(true);
+        const entry: GoogleEntry = {
+          phone: data.phone ?? null,
+          address: data.address ?? null,
+          openingHours: data.openingHours ?? null,
+          googleMapsUri: data.googleMapsUri ?? null,
+          photoUrl: data.photoUrl ?? null,
+        };
+        const cache = readJson<GoogleCache>(STORAGE_KEYS.googleCache, {});
+        cache[lead.id] = entry;
+        writeJson(STORAGE_KEYS.googleCache, cache);
+        setLeadEverywhere(mergeGoogle(lead, entry));
       } catch {
-        setLeadEverywhere(rescore({ ...lead, instagram: null }));
-      } finally {
-        setEnrichingId(null);
+        setLeadEverywhere({ ...lead, photoUrl: null });
       }
     },
-    [rescore, setLeadEverywhere],
+    [googleEnabled, setLeadEverywhere],
   );
 
-  // ---- Anreicherung (Batch) ----
-  const handleEnrichBatch = useCallback(async () => {
-    const todo = leads
-      .filter((l) => l.instagram === undefined && l.website)
-      .slice(0, APP_CONFIG.ENRICH_BATCH_MAX);
-    if (todo.length === 0) return;
-    setEnriching(true);
-    try {
-      const res = await fetch("/api/enrich", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ items: todo.map((l) => ({ id: l.id, website: l.website })) }),
-      });
-      const data = await res.json();
-      const map = new Map<string, string | null>(
-        (data.results ?? []).map((r: { id: string; instagram: string | null }) => [r.id, r.instagram]),
-      );
-      const cache = readJson<EnrichCache>(STORAGE_KEYS.enrichCache, {});
-      setLeads((prev) =>
-        prev.map((l) => {
-          if (map.has(l.id)) {
-            const ig = map.get(l.id) ?? null;
-            cache[l.id] = ig;
-            return rescore({ ...l, instagram: ig });
-          }
-          return l;
-        }),
-      );
-      writeJson(STORAGE_KEYS.enrichCache, cache);
-    } catch {
-      /* still */
-    } finally {
-      setEnriching(false);
-    }
-  }, [leads, rescore]);
+  useEffect(() => {
+    if (selected && selected.photoUrl === undefined) handleEnrichGoogle(selected);
+  }, [selected, handleEnrichGoogle]);
 
-  // ---- Indeed-Haken ----
-  const handleToggleIndeed = useCallback(
-    (lead: Lead) => {
-      setLeadEverywhere(rescore({ ...lead, indeedFlag: !lead.indeedFlag }));
-    },
-    [rescore, setLeadEverywhere],
-  );
-
-  // ---- Pipeline lesen ----
+  // ---- Pipeline ----
   const loadPipeline = useCallback(async () => {
     setPipelineLoading(true);
     setPipelineError(null);
@@ -278,7 +306,6 @@ export default function Page() {
     if (view === "pipeline" && !pipelineLoaded) loadPipeline();
   }, [view, pipelineLoaded, loadPipeline]);
 
-  // ---- In Pipeline uebernehmen ----
   const handleAddToPipeline = useCallback(
     async (lead: Lead) => {
       if (lead.notionPageId) return;
@@ -309,15 +336,10 @@ export default function Page() {
     [setLeadEverywhere],
   );
 
-  // ---- Status zuruecksetzen ----
   const handleChangeStatus = useCallback(
     async (pageId: string, status: PipelineStatus) => {
-      setPipeline((prev) =>
-        prev.map((l) => (l.notionPageId === pageId ? { ...l, status } : l)),
-      );
-      setSelected((prev) =>
-        prev && prev.notionPageId === pageId ? { ...prev, status } : prev,
-      );
+      setPipeline((prev) => prev.map((l) => (l.notionPageId === pageId ? { ...l, status } : l)));
+      setSelected((prev) => (prev && prev.notionPageId === pageId ? { ...prev, status } : prev));
       try {
         const res = await fetch("/api/notion/leads", {
           method: "PATCH",
@@ -330,68 +352,63 @@ export default function Page() {
         }
       } catch (e) {
         setPipelineError((e as Error).message);
-        loadPipeline(); // resync
+        loadPipeline();
       }
     },
     [loadPipeline],
   );
 
-  // ---- Export ----
   const handleExportCsv = useCallback(() => {
-    if (leads.length === 0) return;
+    if (displayLeads.length === 0) return;
     downloadFile(
       `lead-radar-${new Date().toISOString().slice(0, 10)}.csv`,
-      leadsToCsv(leads),
+      leadsToCsv(displayLeads),
       "text/csv;charset=utf-8",
     );
-  }, [leads]);
+  }, [displayLeads]);
 
-  // ---- HUD-Zaehler ----
   const counts = useMemo(() => {
-    let hot = 0,
-      warm = 0,
-      cold = 0;
-    for (const l of leads) {
-      if (l.score.rating === "HOT") hot++;
-      else if (l.score.rating === "WARM") warm++;
-      else cold++;
+    const c: Record<Einstufung, number> = { HOT: 0, WARM: 0, COLD: 0, RAUS: 0 };
+    const pain = { hoch: 0, mittel: 0, niedrig: 0 };
+    for (const l of displayLeads) {
+      c[l.einstufung]++;
+      if (l.einstufung !== "RAUS") pain[l.painMatch.level]++;
     }
-    return { hot, warm, cold };
-  }, [leads]);
+    return { ...c, pain };
+  }, [displayLeads]);
 
   const toggleCategory = (id: string) =>
-    setCategories((prev) =>
-      prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id],
-    );
+    setCategories((prev) => (prev.includes(id) ? prev.filter((c) => c !== id) : [...prev, id]));
 
   return (
     <div className="flex h-full flex-col">
-      {booting && <BootSequence onDone={() => setBooting(false)} />}
-
       <Hud
         view={view}
         onViewChange={setView}
-        scanned={leads.length}
-        hot={counts.hot}
-        warm={counts.warm}
-        cold={counts.cold}
-        apiCalls={requestCount}
+        scanned={displayLeads.length}
+        hot={counts.HOT}
+        warm={counts.WARM}
+        cold={counts.COLD}
+        raus={counts.RAUS}
+        painHoch={counts.pain.hoch}
+        painMittel={counts.pain.mittel}
+        painNiedrig={counts.pain.niedrig}
         pipeline={pipeline.length}
         scanning={scanning}
       />
 
       <div className="relative flex-1 overflow-hidden">
-        {/* MAP */}
         <div className={view === "map" ? "h-full" : "hidden"}>
           <MapView
-            leads={leads}
+            leads={displayLeads}
             origin={origin}
             radiusKm={radiusKm}
             scanning={scanning}
+            selectedId={selected?.id}
             onSetOrigin={setOrigin}
             onSelectLead={setSelected}
           />
-          <div className="absolute left-3 top-3 z-20">
+          <div className="absolute left-4 top-4 z-20">
             <SearchPanel
               selected={categories}
               onToggle={toggleCategory}
@@ -400,21 +417,19 @@ export default function Page() {
               onScan={handleScan}
               scanning={scanning}
               origin={origin}
-              resultCount={leads.length}
+              resultCount={displayLeads.length}
               errors={scanErrors}
-              onEnrichAll={handleEnrichBatch}
-              enriching={enriching}
               onExportCsv={handleExportCsv}
+              filterChains={filterChains}
+              onToggleChains={handleToggleChains}
             />
           </div>
         </div>
 
-        {/* LIST */}
         {view === "list" && (
-          <LeadList leads={leads} onSelect={setSelected} selectedId={selected?.id} />
+          <LeadList leads={displayLeads} onSelect={setSelected} selectedId={selected?.id} />
         )}
 
-        {/* PIPELINE */}
         {view === "pipeline" && (
           <PipelineBoard
             leads={pipeline}
@@ -426,17 +441,14 @@ export default function Page() {
           />
         )}
 
-        {/* DRAWER */}
         {selected && (
           <LeadDrawer
             lead={selected}
             onClose={() => setSelected(null)}
             onAddToPipeline={handleAddToPipeline}
-            onEnrich={handleEnrichOne}
-            onToggleIndeed={handleToggleIndeed}
-            enriching={enrichingId === selected.id}
             addingToPipeline={addingToPipeline}
             pipelineError={pipelineActionError}
+            googleEnabled={googleEnabled}
           />
         )}
       </div>

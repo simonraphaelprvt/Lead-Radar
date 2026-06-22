@@ -15,7 +15,7 @@
 //   Beauty, Immobilien) = hoch; angrenzend = mittel; unpassend = niedrig.
 // ====================================================================
 
-export type BranchGroup = "core" | "adjacent" | "low";
+export type BranchGroup = "core" | "adjacent" | "low" | "b2b";
 
 export interface BusinessCategory {
   id: string;
@@ -62,6 +62,18 @@ export const CATEGORIES: BusinessCategory[] = [
   { id: "baeckerei", label: "Bäckerei", osm: ["shop=bakery"], payBase: 25, payMin: 10, payMax: 38, fit: 68, group: "low" },
   { id: "kiosk", label: "Kiosk / Späti", osm: ["shop=kiosk", "shop=convenience"], payBase: 18, payMin: 5, payMax: 32, fit: 45, group: "low" },
   { id: "einzelhandel", label: "Einzelhandel (klein)", osm: ["shop=variety_store", "shop=department_store"], payBase: 28, payMin: 15, payMax: 42, fit: 55, group: "low" },
+
+  // ---------- B2B / Hohe Zahlungskraft ----------
+  // Hinweis: B2B-Betriebe sind in OpenStreetMap oft duenn als Punkte erfasst,
+  // daher liefern diese Kategorien meist weniger Treffer als Gastro/Handel.
+  { id: "maschinenbau", label: "Maschinenbau / Industrie", osm: ["man_made=works", "office=company"], payBase: 88, payMin: 78, payMax: 100, fit: 62, group: "b2b" },
+  { id: "software", label: "Software / SaaS", osm: ["office=it", "office=telecommunication"], payBase: 90, payMin: 78, payMax: 100, fit: 74, group: "b2b" },
+  { id: "recruiting", label: "Personalvermittlung / Recruiting", osm: ["office=employment_agency"], payBase: 85, payMin: 75, payMax: 100, fit: 72, group: "b2b" },
+  { id: "versicherung", label: "Versicherung / Finanzberatung", osm: ["office=insurance", "office=financial", "office=financial_advisor"], payBase: 86, payMin: 76, payMax: 100, fit: 64, group: "b2b" },
+  { id: "bautraeger", label: "Bauträger / Immobilienentwickler", osm: ["office=property_management"], payBase: 88, payMin: 78, payMax: 100, fit: 66, group: "b2b" },
+  { id: "medizintechnik", label: "Medizintechnik / Health-Tech", osm: ["shop=medical_supply", "healthcare=laboratory"], payBase: 88, payMin: 78, payMax: 100, fit: 64, group: "b2b" },
+  { id: "ingenieur", label: "Ingenieurbüro", osm: ["office=engineer", "office=architect"], payBase: 84, payMin: 76, payMax: 100, fit: 62, group: "b2b" },
+  { id: "ecommerce", label: "E-Commerce-Marke (eigenes Lager)", osm: ["office=company", "shop=trade"], payBase: 82, payMin: 70, payMax: 100, fit: 78, group: "b2b" },
 ];
 
 const CATEGORY_MAP = new Map(CATEGORIES.map((c) => [c.id, c]));

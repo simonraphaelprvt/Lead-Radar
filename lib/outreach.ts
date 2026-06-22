@@ -8,8 +8,23 @@
 // Stilregel ueberall: NIEMALS Gedankenstriche.
 // ====================================================================
 
-import { getCategory } from "./categories";
 import type { Lead, OutreachResult } from "./types";
+
+/** Leitet aus categoryLabel/types einen Branchen-Schluessel fuer die Content-Idee ab. */
+function categoryKey(lead: Lead): string {
+  const hay = `${lead.categoryLabel} ${(lead.types ?? []).join(" ")}`.toLowerCase();
+  if (/\bbar\b|club|nightclub/.test(hay)) return "bar";
+  if (/auto|kfz|car_dealer/.test(hay)) return "autohaus";
+  if (/fitness|gym/.test(hay)) return "fitness";
+  if (/beauty|kosmetik|friseur|hair|spa/.test(hay)) return "beauty";
+  if (/hotel|resort|event|location|lodging/.test(hay)) return "hotel";
+  if (/immobilien|estate/.test(hay)) return "immobilien";
+  if (/zahnarzt|dentist/.test(hay)) return "zahnarzt";
+  if (/arzt|praxis|doctor/.test(hay)) return "arztpraxis";
+  if (/anwalt|steuer|kanzlei|lawyer|\bbau\b/.test(hay)) return "anwalt";
+  if (/restaurant|cafe|café|imbiss|baeck|bäck|food|gastro|sushi|grill/.test(hay)) return "restaurant";
+  return "default";
+}
 
 const SIGNATUR = "Mit freundlichen Grüßen, Simon Raphael Moser";
 
@@ -33,11 +48,10 @@ interface Idea {
 }
 
 function ideaFor(lead: Lead): Idea {
-  const cat = getCategory(lead.categoryId);
   const n = lead.name;
 
-  // Spezifisch nach Kategorie, sonst nach Gruppe.
-  switch (lead.categoryId) {
+  // Spezifisch nach Branche (aus categoryLabel/types abgeleitet), sonst generisch.
+  switch (categoryKey(lead)) {
     case "restaurant":
     case "cafe":
     case "imbiss":
@@ -140,8 +154,6 @@ function ideaFor(lead: Lead): Idea {
         ],
       };
   }
-  // (cat bewusst geladen, falls man spaeter nach Gruppe verzweigen will)
-  void cat;
 }
 
 function ideaToText(idea: Idea): string {
@@ -230,10 +242,9 @@ export function buildSystemPrompt(): string {
 }
 
 export function buildUserPrompt(lead: Lead): string {
-  const cat = getCategory(lead.categoryId);
   const lines = [
     `Business: ${lead.name}`,
-    `Branche: ${lead.branchLabel} (${cat.group})`,
+    `Branche: ${lead.categoryLabel}`,
     lead.address ? `Adresse: ${lead.address}` : "",
     lead.website ? `Website: ${lead.website}` : "Website: keine gefunden",
     typeof lead.instagram === "string"
@@ -242,7 +253,7 @@ export function buildUserPrompt(lead: Lead): string {
         ? "Instagram: kein Account gefunden"
         : "Instagram: nicht geprüft",
     typeof lead.rating === "number" ? `Google-Bewertung: ${lead.rating} bei ${lead.reviewCount ?? 0} Bewertungen` : "",
-    `Bewertung als Lead: ${lead.score.rating} (Bedarf ${lead.score.need}, Zahlungskraft ${lead.score.pay}, Fit ${lead.score.fit})`,
+    `Bewertung als Lead: ${lead.einstufung} (Tier ${lead.tier}, Substanz ${lead.substanzScore}/100)`,
     "",
     "Schreibe die Content-Idee so spezifisch wie möglich für genau dieses Business.",
   ].filter(Boolean);

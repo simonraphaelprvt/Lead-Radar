@@ -1,4 +1,4 @@
-import type { LeadRating, PipelineStatus } from "./types";
+import type { Einstufung, PipelineStatus } from "./types";
 
 // ====================================================================
 // Notion-Property-Namen (zentrale Konstante)
@@ -35,13 +35,14 @@ export const PIPELINE_STATUSES: PipelineStatus[] = [
   "Abgelehnt",
 ];
 
-export const RATINGS: LeadRating[] = ["HOT", "WARM", "COLD"];
+export const RATINGS: Einstufung[] = ["HOT", "WARM", "COLD", "RAUS"];
 
-/** Farben fuer die Bewertungen (Pins, Badges). Spiegeln tailwind.config wider. */
-export const RATING_COLORS: Record<LeadRating, string> = {
-  HOT: "#ff3b3b",
-  WARM: "#ffb000",
-  COLD: "#6f8f80",
+/** Farben fuer die Einstufungen (Pins, Badges). Spiegeln tailwind.config wider. */
+export const RATING_COLORS: Record<Einstufung, string> = {
+  HOT: "#DA5B4A",
+  WARM: "#C79A5B",
+  COLD: "#7A7A80",
+  RAUS: "#46464A",
 };
 
 export const STATUS_COLORS: Record<PipelineStatus, string> = {
@@ -68,11 +69,26 @@ export const APP_CONFIG = {
   MAX_RESULTS_PER_CATEGORY: 20,
 };
 
+// ---- Zahlungskraft-Filter (Slider 1..5) ----
+// Mindest-Zahlungskraft (pay_score), ab der ein Lead noch angezeigt wird.
+// Stufe 1 = alle, Stufe 5 = nur sehr hohe Zahlungskraft.
+export const PAY_FILTER = {
+  THRESHOLDS: { 1: 0, 2: 25, 3: 45, 4: 65, 5: 80 } as Record<number, number>,
+  LABELS: {
+    1: "alle",
+    2: "ab niedrig",
+    3: "ab mittel",
+    4: "ab hoch",
+    5: "nur sehr hoch",
+  } as Record<number, string>,
+};
+
 // ---- localStorage Keys ----
 export const STORAGE_KEYS = {
   requestCount: "lr_request_count",
   scanCache: "lr_scan_cache",
   ui: "lr_ui_state",
   enrichCache: "lr_enrich_cache",
+  googleCache: "lr_google_cache",
   booted: "lr_booted",
 };

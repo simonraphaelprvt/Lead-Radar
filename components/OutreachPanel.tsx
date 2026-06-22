@@ -45,7 +45,7 @@ export default function OutreachPanel({ lead }: { lead: Lead }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
-        <div className="text-[11px] tracking-widest text-phosphor glow-text">⊹ OUTREACH</div>
+        <div className="text-[11px] font-semibold tracking-wider uppercase text-phosphor-muted">Outreach</div>
         {result && (
           <span className="text-[9px] tracking-widest text-phosphor-muted border border-terminal-border px-1.5 py-0.5">
             {result.mode === "ai" ? "KI-MODUS" : "TEMPLATE"}
@@ -59,7 +59,7 @@ export default function OutreachPanel({ lead }: { lead: Lead }) {
           disabled={loading}
           className="w-full py-2 text-xs tracking-[0.2em] font-bold border border-phosphor text-phosphor hover:bg-phosphor-dim/25 disabled:opacity-40 transition-colors"
         >
-          {loading ? "◈ GENERIERE ..." : "▶ OUTREACH ERSTELLEN"}
+          {loading ? "Generiere …" : "Outreach erstellen"}
         </button>
       )}
 

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { Lead, PipelineStatus } from "@/lib/types";
 import { PIPELINE_STATUSES, STATUS_COLORS } from "@/lib/constants";
-import { RatingBadge } from "./ScoreBars";
+import { EinstufungBadge } from "./Badges";
 
 interface BoardProps {
   leads: Lead[];
@@ -27,22 +27,22 @@ function Card({
     <div
       draggable
       onDragStart={(e) => e.dataTransfer.setData("text/lead", lead.notionPageId ?? "")}
-      className="panel corner-brackets p-2 mb-2 border cursor-grab active:cursor-grabbing hover:border-phosphor-dim"
+      className="panel rounded-md p-2.5 mb-2 cursor-grab active:cursor-grabbing hover:border-phosphor-dim transition-colors"
     >
       <div className="flex items-start justify-between gap-1">
         <button
           onClick={() => onSelect(lead)}
-          className="text-left text-xs text-phosphor-text hover:text-phosphor truncate max-w-[150px]"
+          className="text-left text-[13px] text-phosphor-text hover:text-phosphor truncate max-w-[150px]"
         >
           {lead.name}
         </button>
-        <RatingBadge rating={lead.score.rating} />
+        <EinstufungBadge e={lead.einstufung} />
       </div>
-      <div className="mt-1 flex items-center gap-2 text-[10px] text-phosphor-muted">
-        <span className="tabular-nums">SCR {lead.score.final}</span>
+      <div className="mt-1.5 flex items-center gap-2 text-[10px] text-phosphor-muted">
+        <span className="font-mono tabular-nums">{lead.substanzScore}</span>
         {lead.phone && <span>☎</span>}
         {typeof lead.instagram === "string" && <span className="text-phosphor">IG</span>}
-        <span className="truncate">{lead.branchLabel}</span>
+        <span className="truncate">{lead.categoryLabel}</span>
       </div>
       <select
         value={lead.status ?? "Neu"}
@@ -75,8 +75,8 @@ export default function PipelineBoard(props: BoardProps) {
   return (
     <div className="h-full flex flex-col">
       <div className="panel flex items-center gap-3 px-3 py-2 border-b">
-        <span className="text-[11px] tracking-widest text-phosphor glow-text">
-          ⊹ VERTRIEBS-PIPELINE
+        <span className="text-[11px] font-semibold tracking-wider uppercase text-phosphor-text">
+          Vertriebs-Pipeline
         </span>
         <span className="text-[10px] text-phosphor-muted">
           {props.leads.length} Leads · Quelle: Notion
