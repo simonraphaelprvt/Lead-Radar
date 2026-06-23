@@ -30,6 +30,7 @@ export const NOTION_PROPS = {
 export const PIPELINE_STATUSES: PipelineStatus[] = [
   "Neu",
   "Angeschrieben",
+  "In Kontakt",
   "Termin",
   "Kunde",
   "Abgelehnt",
@@ -56,6 +57,7 @@ export const EINSTUFUNG_LABEL: Record<Einstufung, string> = {
 export const STATUS_COLORS: Record<PipelineStatus, string> = {
   Neu: "#39ff8b",
   Angeschrieben: "#ffb000",
+  "In Kontakt": "#c79a5b",
   Termin: "#37c0ff",
   Kunde: "#7dffb6",
   Abgelehnt: "#7a5a5a",

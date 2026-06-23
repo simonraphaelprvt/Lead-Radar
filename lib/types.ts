@@ -21,6 +21,7 @@ export type { Tier, Einstufung, Empfehlung, CheckStatus, Teilscore, PainSignal, 
 export type PipelineStatus =
   | "Neu"
   | "Angeschrieben"
+  | "In Kontakt"
   | "Termin"
   | "Kunde"
   | "Abgelehnt";
