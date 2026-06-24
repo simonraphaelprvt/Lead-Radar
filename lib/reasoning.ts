@@ -119,8 +119,12 @@ export const REASONING_CONFIG = {
 
   // --- PAIN-SIGNALE : Gewichtspunkte je gefundenem Signal -------------
   PAIN_WEIGHTS: { hoch: 45, mittel: 25, niedrig: 12 } as Record<PainWeight, number>,
-  // Tage ohne Instagram-Post, ab denen "inaktiv" gilt.
+  // Tage ohne Instagram-Post, ab denen "inaktiv" gilt (Website-Heuristik).
   IG_INAKTIV_TAGE: 75,
+  // Apify-Reels: ab so vielen Tagen ohne Reel gilt der Account als "eingeschlafen".
+  IG_REEL_STALE_TAGE: 90,
+  // <= so viele Reels in 90 Tagen = unregelmaessig (mittleres Signal).
+  IG_REEL_UNREGELMAESSIG_90D: 1,
 
   // Branchen mit bekanntem Fachkraeftemangel (mittleres Pain-Gewicht).
   FACHKRAEFTEMANGEL_BRANCHE: [
@@ -164,7 +168,7 @@ export interface BusinessSignals {
   lat?: number;
   lng?: number;
 
-  // ---- Enrichment (Layer 2, optional; server-seitig befuellt) ----
+  // ---- Enrichment Layer 2 (Website-Fetch, server-seitig) ----
   /** Website per Fetch erreichbar? null/undefined = nicht geprueft. */
   siteReachable?: boolean | null;
   siteHttps?: boolean | null;
@@ -174,10 +178,23 @@ export interface BusinessSignals {
   siteBuilder?: string | null;
   /** Auf der Website verlinktes Instagram-Handle (ohne @) oder null. */
   instagramHandle?: string | null;
-  /** Instagram ueberhaupt geprueft (Website gefetcht)? */
+  /** Instagram-Verlinkung ueberhaupt geprueft (Website gefetcht)? */
   igChecked?: boolean;
-  /** Tage seit letztem Instagram-Post; null = nicht ermittelbar. */
+  /** Tage seit letztem Instagram-Post (Website-Heuristik); null = nicht ermittelbar. */
   igLastPostDaysAgo?: number | null;
+
+  // ---- Enrichment Layer 3 (Apify-Instagram, autoritativ) ----
+  /** Apify lief fuer diesen Lead (Reels real geprueft)? */
+  igProbed?: boolean;
+  igExists?: boolean;
+  igPrivate?: boolean;
+  /** Reel in den letzten ~12 Posts vorhanden? */
+  igHasReels?: boolean;
+  /** Tage seit dem neuesten Reel; null = keine/ermittelbar. */
+  igLastReelDays?: number | null;
+  /** Reels in den letzten 90 Tagen (Takt-Proxy). */
+  igReels90d?: number;
+  igFollowers?: number | null;
 }
 
 export type Tier = "A" | "B" | "C";
@@ -424,11 +441,25 @@ function scoreNeed(s: BusinessSignals): Teilscore {
   // Kein moderner Online-Auftritt (aus Enrichment): generische/veraltete Praesenz
   // erhoeht den Bedarf - genau "generische Website / ohne modernen Auftritt".
   if (s.siteBuilder) { score += 12; signale.push(`${s.siteBuilder}-Baukasten`); }
-  if (s.igChecked === true && !s.instagramHandle) { score += 15; signale.push("keine Instagram-Praesenz"); }
-  if (typeof s.igLastPostDaysAgo === "number" && s.igLastPostDaysAgo > C.IG_INAKTIV_TAGE) {
-    score += 12; signale.push(`Instagram inaktiv (${s.igLastPostDaysAgo}d)`);
-  }
   if (s.siteResponsive === false) { score += 8; signale.push("nicht responsive"); }
+
+  // Instagram-Reels: autoritativ aus Apify, sonst Website-Heuristik.
+  if (s.igProbed) {
+    if (s.igExists && !s.igPrivate) {
+      if (!s.igHasReels) { score += 15; signale.push("Account ohne Reels"); }
+      else if (typeof s.igLastReelDays === "number" && s.igLastReelDays > C.IG_REEL_STALE_TAGE) {
+        score += 12; signale.push(`Reels eingeschlafen (${s.igLastReelDays}d)`);
+      } else if ((s.igReels90d ?? 0) <= C.IG_REEL_UNREGELMAESSIG_90D) {
+        score += 6; signale.push("Reels unregelmaessig");
+      }
+    }
+    // kein Account / privat -> bewusst KEIN Need-Boost.
+  } else {
+    if (s.igChecked === true && !s.instagramHandle) { score += 15; signale.push("keine Instagram-Verlinkung"); }
+    if (typeof s.igLastPostDaysAgo === "number" && s.igLastPostDaysAgo > C.IG_INAKTIV_TAGE) {
+      score += 12; signale.push(`Instagram inaktiv (${s.igLastPostDaysAgo}d)`);
+    }
+  }
 
   if (hayHasAny(categoryHay(s), VISUELL_NIEDRIG)) {
     score += C.NEED_REINE_DIENSTLEISTUNG;
@@ -455,6 +486,47 @@ function scoreFit(s: BusinessSignals): Teilscore {
 // Kein Signal aus Vermutung. Ist die Datenlage zu duenn -> pruefbar=false,
 // found=false (kein Punkt), Beleg verweist auf den Erstkontakt.
 // ====================================================================
+/** IG-Reels-Signale: autoritativ aus Apify (igProbed), sonst Website-Heuristik. */
+function computeIgSignals(s: BusinessSignals): PainSignal[] {
+  if (s.igProbed) {
+    if (s.igPrivate) {
+      return [{
+        key: "ig_aktivitaet", label: "Instagram-Aktivitaet", weight: "hoch",
+        pruefbar: false, found: false, beleg: "Account privat -> im Erstkontakt pruefen",
+      }];
+    }
+    if (!s.igExists) {
+      // Kein Account = schlechterer Lead (nicht auf der Plattform), NICHT hoch.
+      return [{
+        key: "ig_kein_account", label: "Kein Instagram-Account", weight: "niedrig",
+        pruefbar: true, found: true, beleg: "kein Account auffindbar - nicht auf der Plattform (schwaches Signal)",
+      }];
+    }
+    // Account existiert & oeffentlich -> Reels-Aktivitaet bewerten.
+    let weight: PainWeight = "hoch";
+    let found = false;
+    let beleg = "Reels aktuell & regelmaessig";
+    if (!s.igHasReels) {
+      found = true; weight = "hoch"; beleg = "Account aktiv, aber keine Reels (Simons Kernangebot)";
+    } else if (typeof s.igLastReelDays === "number" && s.igLastReelDays > C.IG_REEL_STALE_TAGE) {
+      found = true; weight = "hoch"; beleg = `letztes Reel vor ${s.igLastReelDays} Tagen (eingeschlafen)`;
+    } else if ((s.igReels90d ?? 0) <= C.IG_REEL_UNREGELMAESSIG_90D) {
+      found = true; weight = "mittel"; beleg = `nur ${s.igReels90d ?? 0} Reels in 90 Tagen (kein roter Faden)`;
+    }
+    return [{ key: "ig_aktivitaet", label: "Instagram-Reels schwach", weight, pruefbar: true, found, beleg }];
+  }
+  // Fallback: nur Website-Verlinkung bekannt (kein Apify).
+  const igChecked = s.igChecked === true;
+  return [{
+    key: "ig_aktivitaet", label: "Keine Instagram-Verlinkung", weight: "hoch",
+    pruefbar: igChecked,
+    found: igChecked && !s.instagramHandle,
+    beleg: igChecked
+      ? (s.instagramHandle ? `Instagram verlinkt (@${s.instagramHandle})` : "Website ohne Instagram-Verlinkung")
+      : "Instagram nicht geprueft -> Erstkontakt",
+  }];
+}
+
 function computePainSignals(s: BusinessSignals): PainSignal[] {
   const own = hasOwnDomain(s.website); // true | false | null
   const host = websiteHost(s.website);
@@ -514,32 +586,8 @@ function computePainSignals(s: BusinessSignals): PainSignal[] {
     beleg: fachk ? "Branche mit bekanntem Fachkraeftemangel" : "Branche ohne typischen Fachkraeftemangel",
   });
 
-  // 5) Keine Instagram-Praesenz (hoch) - nur pruefbar, wenn Website gefetcht.
-  const igChecked = s.igChecked === true;
-  sig.push({
-    key: "keine_instagram_praesenz",
-    label: "Keine Instagram-Praesenz",
-    weight: "hoch",
-    pruefbar: igChecked,
-    found: igChecked && !s.instagramHandle,
-    beleg: igChecked
-      ? s.instagramHandle ? `Instagram verlinkt (@${s.instagramHandle})` : "Website ohne Instagram-Verlinkung"
-      : "Instagram nicht geprueft (Enrichment aus) -> Erstkontakt",
-  });
-
-  // 6) Instagram inaktiv (hoch) - nur pruefbar mit Last-Post-Datum.
-  const igDays = s.igLastPostDaysAgo;
-  const igDaysKnown = typeof igDays === "number";
-  sig.push({
-    key: "instagram_inaktiv",
-    label: "Instagram inaktiv",
-    weight: "hoch",
-    pruefbar: igDaysKnown,
-    found: igDaysKnown && (igDays as number) > C.IG_INAKTIV_TAGE,
-    beleg: igDaysKnown
-      ? `letzter Post vor ${igDays} Tagen`
-      : "IG-Aktivitaet nicht ermittelbar -> Erstkontakt",
-  });
+  // 5+6) Instagram (Reels-Aktivitaet) - autoritativ aus Apify, sonst Website-Heuristik.
+  for (const igSig of computeIgSignals(s)) sig.push(igSig);
 
   // 7) Website veraltet/generisch (niedrig) - nur pruefbar mit Site-Fetch.
   const siteOk = s.siteReachable === true;

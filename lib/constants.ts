@@ -77,6 +77,12 @@ export const APP_CONFIG = {
   ENRICH_BATCH_MAX: 12,
   /** Maximale Ergebnisse pro Kategorie-Call (Google-Limit ist 20). */
   MAX_RESULTS_PER_CATEGORY: 20,
+  // ---- Instagram-Enrichment (Apify) ----
+  /** IG-Profile pro Handle 3 Wochen cachen (localStorage), spart Apify-Calls. */
+  IG_CACHE_TTL_MS: 21 * 24 * 60 * 60 * 1000,
+  /** Nur "verfolgenswerte" Leads bekommen einen IG-Call (Kapital + Fit). */
+  IG_CANDIDATE_PAY: 45,
+  IG_CANDIDATE_FIT: 50,
 };
 
 // ---- Zahlungskraft-Filter (Slider 1..5) ----
@@ -100,5 +106,6 @@ export const STORAGE_KEYS = {
   ui: "lr_ui_state",
   enrichCache: "lr_enrich_cache",
   googleCache: "lr_google_cache",
+  instaCache: "lr_insta_cache",
   booted: "lr_booted",
 };

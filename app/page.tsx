@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import type { Lead, Einstufung, PipelineStatus } from "@/lib/types";
 import { qualify, type BusinessSignals } from "@/lib/reasoning";
+import type { IgIntel } from "@/lib/instagram";
 import { APP_CONFIG, STORAGE_KEYS } from "@/lib/constants";
 import { leadsToCsv, downloadFile } from "@/lib/exporters";
 
@@ -102,6 +103,13 @@ function requalify(l: Lead, filterChains: boolean): Lead {
     instagramHandle: l.instagramHandle ?? null,
     igChecked: l.igChecked ?? false,
     igLastPostDaysAgo: l.igLastPostDaysAgo ?? null,
+    igProbed: l.igProbed ?? false,
+    igExists: l.igExists,
+    igPrivate: l.igPrivate,
+    igHasReels: l.igHasReels,
+    igLastReelDays: l.igLastReelDays ?? null,
+    igReels90d: l.igReels90d,
+    igFollowers: l.igFollowers ?? null,
   };
   const q = qualify(s, { filterChains });
   return {
@@ -122,6 +130,24 @@ function requalify(l: Lead, filterChains: boolean): Lead {
     achsen: { pay: q.pay, need: q.need, fit: q.fit },
     erstkontakt: q.im_erstkontakt_pruefen,
   };
+}
+
+type IgCache = Record<string, { ts: number; intel: IgIntel }>;
+
+/** Apify-IG-Daten auf einen Lead schreiben + neu bewerten (Engine ist rein). */
+function applyIg(l: Lead, intel: IgIntel, filterChains: boolean): Lead {
+  const withIg: Lead = {
+    ...l,
+    igProbed: true,
+    igExists: intel.exists,
+    igPrivate: intel.private,
+    igHasReels: intel.hasReels,
+    igLastReelDays: intel.lastReelDays,
+    igReels90d: intel.reels90d,
+    igFollowers: intel.followers,
+    instagram: l.instagram ?? (intel.exists ? `https://instagram.com/${intel.handle}` : l.instagram),
+  };
+  return requalify(withIg, filterChains);
 }
 
 export default function Page() {
@@ -195,8 +221,8 @@ export default function Page() {
     if (!origin || categories.length === 0 || scanning) return;
     setScanErrors([]);
     const cats = [...categories].sort();
-    // v5: Engine v3 + Website/IG-Enrichment -> aeltere Caches ohne Enrichment-Felder.
-    const key = `v5|${origin.lat.toFixed(4)},${origin.lng.toFixed(4)},${radiusKm},${cats.join("+")}`;
+    // v6: + Apify-Instagram (Reels-Signale) -> aeltere Caches inkompatibel.
+    const key = `v6|${origin.lat.toFixed(4)},${origin.lng.toFixed(4)},${radiusKm},${cats.join("+")}`;
 
     setScanning(true);
     const started = Date.now();
@@ -314,6 +340,73 @@ export default function Page() {
   useEffect(() => {
     if (view === "pipeline" && !pipelineLoaded) loadPipeline();
   }, [view, pipelineLoaded, loadPipeline]);
+
+  // ---- Instagram-Enrichment (Apify, nach dem Scan) ----
+  // Pass 2: nur verfolgenswerte Leads (Kapital+Fit) MIT Handle bekommen einen
+  // IG-Call. Ergebnis wird gecacht, in die Leads gemerged und live re-bewertet,
+  // damit IG die Stufe auf Karte/Liste beeinflusst. Engine ist rein.
+  const igAttempted = useRef<Set<string>>(new Set());
+  const runIgEnrichment = useCallback(
+    async (cands: Lead[]) => {
+      const cache = readJson<IgCache>(STORAGE_KEYS.instaCache, {});
+      const now = Date.now();
+      const have: Record<string, IgIntel> = {};
+      const need: string[] = [];
+      for (const l of cands) {
+        const h = (l.instagramHandle ?? "").toLowerCase();
+        if (!h) continue;
+        const c = cache[h];
+        if (c && now - c.ts < APP_CONFIG.IG_CACHE_TTL_MS) have[h] = c.intel;
+        else if (!need.includes(h)) need.push(h);
+      }
+      let fetched: Record<string, IgIntel> = {};
+      if (need.length > 0) {
+        try {
+          const res = await fetch("/api/instagram", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ handles: need }),
+          });
+          const data = (await res.json()) as { profiles?: Record<string, IgIntel> };
+          fetched = data.profiles ?? {};
+        } catch {
+          fetched = {};
+        }
+        if (Object.keys(fetched).length > 0) {
+          const nextCache: IgCache = { ...cache };
+          for (const [h, intel] of Object.entries(fetched)) nextCache[h] = { ts: now, intel };
+          writeJson(STORAGE_KEYS.instaCache, nextCache);
+        }
+      }
+      const all: Record<string, IgIntel> = { ...have, ...fetched };
+      if (Object.keys(all).length === 0) return;
+      setLeads((prev) =>
+        sortClient(
+          prev.map((l) => {
+            const h = (l.instagramHandle ?? "").toLowerCase();
+            return h && all[h] && !l.igProbed ? applyIg(l, all[h], filterChains) : l;
+          }),
+        ),
+      );
+    },
+    [filterChains],
+  );
+
+  useEffect(() => {
+    const cands = leads.filter(
+      (l) =>
+        l.einstufung !== "RAUS" &&
+        !l.igProbed &&
+        typeof l.instagramHandle === "string" &&
+        l.instagramHandle.length > 0 &&
+        l.payScore >= APP_CONFIG.IG_CANDIDATE_PAY &&
+        l.fitScore >= APP_CONFIG.IG_CANDIDATE_FIT &&
+        !igAttempted.current.has(l.instagramHandle.toLowerCase()),
+    );
+    if (cands.length === 0) return;
+    for (const l of cands) igAttempted.current.add((l.instagramHandle ?? "").toLowerCase());
+    runIgEnrichment(cands);
+  }, [leads, runIgEnrichment]);
 
   const handleAddToPipeline = useCallback(
     async (lead: Lead) => {

@@ -61,7 +61,7 @@ export interface Lead {
   photoCount?: number | null;
   types?: string[];
 
-  // ---- Enrichment (Website-/Instagram-Fetch, server-seitig) ----
+  // ---- Enrichment Layer 2 (Website-Fetch, server-seitig) ----
   siteReachable?: boolean | null;
   siteHttps?: boolean | null;
   siteResponsive?: boolean | null;
@@ -69,6 +69,15 @@ export interface Lead {
   instagramHandle?: string | null;
   igChecked?: boolean;
   igLastPostDaysAgo?: number | null;
+
+  // ---- Enrichment Layer 3 (Apify-Instagram, nach dem Scan im Browser gemerged) ----
+  igProbed?: boolean;
+  igExists?: boolean;
+  igPrivate?: boolean;
+  igHasReels?: boolean;
+  igLastReelDays?: number | null;
+  igReels90d?: number;
+  igFollowers?: number | null;
 
   // ---- Reasoning-Engine v3 (Oberindikator) ----
   einstufung: Einstufung; // IN_NEED | INTERESTED | COMMON | RAUS  (EINZIGER Indikator)
