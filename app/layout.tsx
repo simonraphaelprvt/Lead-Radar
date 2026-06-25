@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import AccessGate from "@/components/AccessGate";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -33,7 +34,9 @@ export default function RootLayout({
   return (
     <html lang="de" className={`${inter.variable} ${mono.variable}`}>
       <body>
-        <main>{children}</main>
+        <main>
+          <AccessGate>{children}</AccessGate>
+        </main>
       </body>
     </html>
   );
