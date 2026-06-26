@@ -145,9 +145,29 @@ function applyIg(l: Lead, intel: IgIntel, filterChains: boolean): Lead {
     igLastReelDays: intel.lastReelDays,
     igReels90d: intel.reels90d,
     igFollowers: intel.followers,
-    instagram: l.instagram ?? (intel.exists ? `https://instagram.com/${intel.handle}` : l.instagram),
+    instagramHandle: l.instagramHandle ?? (intel.exists ? intel.handle : l.instagramHandle),
+    instagram: l.instagram ?? (intel.exists && intel.handle ? `https://instagram.com/${intel.handle}` : l.instagram),
   };
   return requalify(withIg, filterChains);
+}
+
+/** Sentinel: per Namens-Suche KEIN Account gefunden (negativ cachen). */
+const IG_NOT_FOUND: IgIntel = {
+  handle: "", exists: false, private: false, followers: null,
+  postsCount: null, hasReels: false, lastReelDays: null, reels90d: 0, lastPostDays: null,
+};
+
+function normNameKey(n: string): string {
+  return "q:" + n.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+function cityOf(l: Lead): string {
+  const m = (l.address || "").match(/\b\d{5}\s+([A-Za-zÄÖÜäöüß .'-]+)/);
+  return m ? m[1].split(",")[0].trim() : "";
+}
+/** Instagram-Suchanfrage: Name ohne Rechtsform + Ort. */
+function igSearchQuery(l: Lead): string {
+  const name = l.name.replace(/\b(gmbh|ug|e\.?\s?k\.?|kg|ohg|mbh|inh\.?|&\s?co\.?\s?kg)\b/gi, "").trim();
+  return `${name} ${cityOf(l)}`.trim();
 }
 
 export default function Page() {
@@ -222,7 +242,7 @@ export default function Page() {
     setScanErrors([]);
     const cats = [...categories].sort();
     // v6: + Apify-Instagram (Reels-Signale) -> aeltere Caches inkompatibel.
-    const key = `v6|${origin.lat.toFixed(4)},${origin.lng.toFixed(4)},${radiusKm},${cats.join("+")}`;
+    const key = `v7|${origin.lat.toFixed(4)},${origin.lng.toFixed(4)},${radiusKm},${cats.join("+")}`;
 
     setScanning(true);
     const started = Date.now();
@@ -342,70 +362,118 @@ export default function Page() {
   }, [view, pipelineLoaded, loadPipeline]);
 
   // ---- Instagram-Enrichment (Apify, nach dem Scan) ----
-  // Pass 2: nur verfolgenswerte Leads (Kapital+Fit) MIT Handle bekommen einen
-  // IG-Call. Ergebnis wird gecacht, in die Leads gemerged und live re-bewertet,
-  // damit IG die Stufe auf Karte/Liste beeinflusst. Engine ist rein.
+  // Pass 2: verfolgenswerte Leads (Kapital+Fit) bekommen echte IG-Daten.
+  //  - Handle aus der Website -> Profil-Scrape (Batch, schnell)
+  //  - kein Handle -> NAMENS-SUCHE (findet den Account, gedeckelt, langsam)
+  // Ergebnis 3 Wochen gecacht, in die Leads gemerged + live re-bewertet, damit
+  // IG die Stufe auf Karte/Liste treibt. Engine ist rein.
   const igAttempted = useRef<Set<string>>(new Set());
   const runIgEnrichment = useCallback(
     async (cands: Lead[]) => {
-      const cache = readJson<IgCache>(STORAGE_KEYS.instaCache, {});
       const now = Date.now();
-      const have: Record<string, IgIntel> = {};
-      const need: string[] = [];
+      const cacheGet = (k: string) => {
+        const c = readJson<IgCache>(STORAGE_KEYS.instaCache, {})[k];
+        return c && now - c.ts < APP_CONFIG.IG_CACHE_TTL_MS ? c.intel : null;
+      };
+      const cachePut = (k: string, intel: IgIntel) => {
+        const c = readJson<IgCache>(STORAGE_KEYS.instaCache, {});
+        c[k] = { ts: now, intel };
+        writeJson(STORAGE_KEYS.instaCache, c);
+      };
+      // Ein einzelnes Ergebnis live in die Leads mergen + re-bewerten.
+      const apply = (map: Record<string, IgIntel>) =>
+        setLeads((prev) =>
+          sortClient(prev.map((l) => (map[l.id] && !l.igProbed ? applyIg(l, map[l.id], filterChains) : l))),
+        );
+
+      // 1) Handle-Leads: Batch-Profil-Scrape (schnell).
+      const needHandles: string[] = [];
+      const handleLeads: Record<string, string[]> = {};
+      const cachedMerge: Record<string, IgIntel> = {};
+      const searchJobs: { leadId: string; nk: string; query: string; name: string }[] = [];
       for (const l of cands) {
         const h = (l.instagramHandle ?? "").toLowerCase();
-        if (!h) continue;
-        const c = cache[h];
-        if (c && now - c.ts < APP_CONFIG.IG_CACHE_TTL_MS) have[h] = c.intel;
-        else if (!need.includes(h)) need.push(h);
+        if (h) {
+          (handleLeads[h] ??= []).push(l.id);
+          const hit = cacheGet(h);
+          if (hit) cachedMerge[l.id] = hit;
+          else if (!needHandles.includes(h)) needHandles.push(h);
+        } else {
+          const nk = normNameKey(l.name);
+          const hit = cacheGet(nk);
+          if (hit) cachedMerge[l.id] = hit;
+          else searchJobs.push({ leadId: l.id, nk, query: igSearchQuery(l), name: l.name });
+        }
       }
-      let fetched: Record<string, IgIntel> = {};
-      if (need.length > 0) {
+      if (Object.keys(cachedMerge).length > 0) apply(cachedMerge);
+
+      if (needHandles.length > 0) {
         try {
           const res = await fetch("/api/instagram", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ handles: need }),
+            body: JSON.stringify({ handles: needHandles }),
           });
           const data = (await res.json()) as { profiles?: Record<string, IgIntel> };
-          fetched = data.profiles ?? {};
+          const profiles = data.profiles ?? {};
+          const merge: Record<string, IgIntel> = {};
+          for (const [h, intel] of Object.entries(profiles)) {
+            cachePut(h, intel);
+            for (const id of handleLeads[h] ?? []) merge[id] = intel;
+          }
+          if (Object.keys(merge).length > 0) apply(merge);
         } catch {
-          fetched = {};
-        }
-        if (Object.keys(fetched).length > 0) {
-          const nextCache: IgCache = { ...cache };
-          for (const [h, intel] of Object.entries(fetched)) nextCache[h] = { ts: now, intel };
-          writeJson(STORAGE_KEYS.instaCache, nextCache);
+          /* Leads bleiben ohne IG */
         }
       }
-      const all: Record<string, IgIntel> = { ...have, ...fetched };
-      if (Object.keys(all).length === 0) return;
-      setLeads((prev) =>
-        sortClient(
-          prev.map((l) => {
-            const h = (l.instagramHandle ?? "").toLowerCase();
-            return h && all[h] && !l.igProbed ? applyIg(l, all[h], filterChains) : l;
-          }),
-        ),
-      );
+
+      // 2) Namens-Suchen: je EIN Call (zuverlaessig <60s), Nebenlaeufigkeit 3,
+      //    progressives Update pro Treffer.
+      let idx = 0;
+      const worker = async () => {
+        while (idx < searchJobs.length) {
+          const job = searchJobs[idx++];
+          try {
+            const res = await fetch("/api/instagram", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ searches: [{ key: job.leadId, query: job.query, name: job.name }] }),
+            });
+            const data = (await res.json()) as { searchResults?: Record<string, IgIntel | null> };
+            const intel = (data.searchResults ?? {})[job.leadId] ?? null;
+            const val = intel ?? IG_NOT_FOUND; // negativ cachen -> nicht erneut suchen
+            cachePut(job.nk, val);
+            apply({ [job.leadId]: val });
+          } catch {
+            /* Lead bleibt ohne IG */
+          }
+        }
+      };
+      await Promise.all([worker(), worker(), worker()]);
     },
     [filterChains],
   );
 
   useEffect(() => {
-    const cands = leads.filter(
-      (l) =>
-        l.einstufung !== "RAUS" &&
-        !l.igProbed &&
-        typeof l.instagramHandle === "string" &&
-        l.instagramHandle.length > 0 &&
-        l.payScore >= APP_CONFIG.IG_CANDIDATE_PAY &&
-        l.fitScore >= APP_CONFIG.IG_CANDIDATE_FIT &&
-        !igAttempted.current.has(l.instagramHandle.toLowerCase()),
-    );
+    const cands = leads
+      .filter(
+        (l) =>
+          l.einstufung !== "RAUS" &&
+          !l.igProbed &&
+          l.payScore >= APP_CONFIG.IG_CANDIDATE_PAY &&
+          l.fitScore >= APP_CONFIG.IG_CANDIDATE_FIT &&
+          !igAttempted.current.has(l.id),
+      )
+      .sort((a, b) => b.payScore - a.payScore); // teuerste zuerst
     if (cands.length === 0) return;
-    for (const l of cands) igAttempted.current.add((l.instagramHandle ?? "").toLowerCase());
-    runIgEnrichment(cands);
+    // Handle-Leads sind billig (ein Batch); Namens-Suchen gedeckelt (langsam).
+    // Ueber dem Deckel liegende Such-Leads bleiben fuer die naechste Runde offen.
+    const withHandle = cands.filter((l) => l.instagramHandle);
+    const noHandle = cands.filter((l) => !l.instagramHandle).slice(0, 8);
+    const process = [...withHandle, ...noHandle];
+    if (process.length === 0) return;
+    for (const l of process) igAttempted.current.add(l.id);
+    runIgEnrichment(process);
   }, [leads, runIgEnrichment]);
 
   const handleAddToPipeline = useCallback(

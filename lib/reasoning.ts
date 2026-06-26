@@ -124,7 +124,7 @@ export const REASONING_CONFIG = {
   // Apify-Reels: ab so vielen Tagen ohne Reel gilt der Account als "eingeschlafen".
   IG_REEL_STALE_TAGE: 90,
   // <= so viele Reels in 90 Tagen = unregelmaessig (mittleres Signal).
-  IG_REEL_UNREGELMAESSIG_90D: 1,
+  IG_REEL_UNREGELMAESSIG_90D: 2,
 
   // Branchen mit bekanntem Fachkraeftemangel (mittleres Pain-Gewicht).
   FACHKRAEFTEMANGEL_BRANCHE: [
@@ -139,9 +139,15 @@ export const REASONING_CONFIG = {
     "e-commerce", "shop",
   ],
 
-  // --- OBERINDIKATOR-SCHWELLEN (scharf) -------------------------------
-  IN_NEED: { FINAL: 65, PAY: 65, FIT: 60 }, // + >=1 belegtes High-Weight-Pain
-  INTERESTED: { FINAL: 40, FIT: 50 },
+  // --- OBERINDIKATOR-SCHWELLEN (bedingungsbasiert, echtes Reasoning) --
+  // Stufe folgt konkreten Bedingungen (Kapital + Fit + belegter Content-
+  // Schmerz), NICHT nur einer Magie-Zahl. final_score ist nur Sortier-/
+  // Anzeigewert.
+  //   IN NEED     = pay>=PAY & fit>=FIT & >=1 HOHES Content-Pain-Signal
+  //   INTERESTED  = fit>=FIT & (hohes Pain  ODER  mittleres Pain & pay>=PAY)
+  //   sonst COMMON (aktiver Auftritt / kein Geld / kein Fit)
+  IN_NEED: { PAY: 60, FIT: 55 },
+  INTERESTED: { PAY: 45, FIT: 50 },
 } as const;
 
 // ====================================================================
@@ -446,11 +452,11 @@ function scoreNeed(s: BusinessSignals): Teilscore {
   // Instagram-Reels: autoritativ aus Apify, sonst Website-Heuristik.
   if (s.igProbed) {
     if (s.igExists && !s.igPrivate) {
-      if (!s.igHasReels) { score += 15; signale.push("Account ohne Reels"); }
+      if (!s.igHasReels) { score += 25; signale.push("Account ohne Reels"); }
       else if (typeof s.igLastReelDays === "number" && s.igLastReelDays > C.IG_REEL_STALE_TAGE) {
-        score += 12; signale.push(`Reels eingeschlafen (${s.igLastReelDays}d)`);
+        score += 18; signale.push(`Reels eingeschlafen (${s.igLastReelDays}d)`);
       } else if ((s.igReels90d ?? 0) <= C.IG_REEL_UNREGELMAESSIG_90D) {
-        score += 6; signale.push("Reels unregelmaessig");
+        score += 10; signale.push("Reels unregelmaessig");
       }
     }
     // kein Account / privat -> bewusst KEIN Need-Boost.
@@ -618,6 +624,9 @@ function painScore(signals: PainSignal[]): number {
 function hasHighWeightPain(signals: PainSignal[]): boolean {
   return signals.some((x) => x.found && x.weight === "hoch");
 }
+function hasMedWeightPain(signals: PainSignal[]): boolean {
+  return signals.some((x) => x.found && x.weight === "mittel");
+}
 
 // ====================================================================
 // STUFE 4: VERRECHNUNG + OBERINDIKATOR
@@ -629,11 +638,13 @@ function verrechnen(pay: number, need: number, pain: number): number {
 }
 
 function einstufen(
-  pay: number, fit: number, final: number, highPain: boolean,
+  pay: number, fit: number, highPain: boolean, medPain: boolean,
 ): Einstufung {
-  if (fit < C.FIT_GATE) return "COMMON"; // fit-Gate: off-profile nie hoch
-  if (final >= C.IN_NEED.FINAL && pay >= C.IN_NEED.PAY && fit >= C.IN_NEED.FIT && highPain) return "IN_NEED";
-  if (final >= C.INTERESTED.FINAL && fit >= C.INTERESTED.FIT) return "INTERESTED";
+  if (fit < C.FIT_GATE) return "COMMON"; // off-profile nie hoch
+  // IN NEED: verfolgenswert (Geld + Fit) UND belegter starker Content-Schmerz.
+  if (pay >= C.IN_NEED.PAY && fit >= C.IN_NEED.FIT && highPain) return "IN_NEED";
+  // INTERESTED: passt + hat einen Schmerz (stark, oder mittel bei Geld).
+  if (fit >= C.INTERESTED.FIT && (highPain || (medPain && pay >= C.INTERESTED.PAY))) return "INTERESTED";
   return "COMMON";
 }
 
@@ -703,10 +714,11 @@ export function qualify(s: BusinessSignals, opts?: QualifyOptions): QualifiedLea
   const pain_signals = computePainSignals(s);
   const pain = painScore(pain_signals);
   const highPain = hasHighWeightPain(pain_signals);
+  const medPain = hasMedWeightPain(pain_signals);
 
-  // STUFE 4: Verrechnung + Oberindikator
+  // STUFE 4: final_score (Sortierwert) + bedingungsbasierter Oberindikator
   const final = verrechnen(pay.score, need.score, pain);
-  const einstufung = einstufen(pay.score, fit.score, final, highPain);
+  const einstufung = einstufen(pay.score, fit.score, highPain, medPain);
   const offProfil = fit.score < C.FIT_GATE;
 
   const empfehlung: Empfehlung =
