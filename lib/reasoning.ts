@@ -638,14 +638,23 @@ function verrechnen(pay: number, need: number, pain: number): number {
 }
 
 function einstufen(
-  pay: number, fit: number, highPain: boolean, medPain: boolean,
+  pay: number, fit: number, igWeakHigh: boolean, highPain: boolean, medPain: boolean,
 ): Einstufung {
   if (fit < C.FIT_GATE) return "COMMON"; // off-profile nie hoch
-  // IN NEED: verfolgenswert (Geld + Fit) UND belegter starker Content-Schmerz.
-  if (pay >= C.IN_NEED.PAY && fit >= C.IN_NEED.FIT && highPain) return "IN_NEED";
-  // INTERESTED: passt + hat einen Schmerz (stark, oder mittel bei Geld).
+  // IN NEED nur mit BESTAETIGTER IG-Schwaeche: Account gefunden + Reels schwach.
+  // Ohne gefundenen Account kann man den Bedarf nicht WISSEN (Simons Regel).
+  if (pay >= C.IN_NEED.PAY && fit >= C.IN_NEED.FIT && igWeakHigh) return "IN_NEED";
+  // INTERESTED: passt + irgendein Schmerz (z.B. keine Website / IG unbekannt).
   if (fit >= C.INTERESTED.FIT && (highPain || (medPain && pay >= C.INTERESTED.PAY))) return "INTERESTED";
   return "COMMON";
+}
+
+/** BESTAETIGTE starke IG-Schwaeche: Account gefunden, oeffentlich, kein/totes Reel. */
+function igWeakHigh(s: BusinessSignals): boolean {
+  if (!s.igProbed || s.igExists !== true || s.igPrivate === true) return false;
+  if (!s.igHasReels) return true; // Account da, aber kein Bewegtbild
+  if (typeof s.igLastReelDays === "number" && s.igLastReelDays > C.IG_REEL_STALE_TAGE) return true;
+  return false;
 }
 
 // ====================================================================
@@ -718,7 +727,7 @@ export function qualify(s: BusinessSignals, opts?: QualifyOptions): QualifiedLea
 
   // STUFE 4: final_score (Sortierwert) + bedingungsbasierter Oberindikator
   const final = verrechnen(pay.score, need.score, pain);
-  const einstufung = einstufen(pay.score, fit.score, highPain, medPain);
+  const einstufung = einstufen(pay.score, fit.score, igWeakHigh(s), highPain, medPain);
   const offProfil = fit.score < C.FIT_GATE;
 
   const empfehlung: Empfehlung =

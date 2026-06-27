@@ -134,13 +134,21 @@ Pipeline pro Business:
 2. **Rohachsen (je 0–100):** `pay_score` (Branchen-Basis × Preislevel × Größe/Reviews × Auto-Marke), `need_score` (grob branchenbasiert: keine/aggregierte Website, etabliert-aber-unsichtbar, **plus Enrichment-Signale**: Baukasten, keine IG-Präsenz, IG inaktiv, nicht responsive), `fit_score` (Passung zu Simons Kernbranchen: Gastro/Automotive/Nightlife/Fitness/Hospitality).
 3. **Pain-Signale (einzeln belegt):** jedes Signal trägt `weight` (hoch/mittel/niedrig), `found`, `pruefbar` und einen konkreten `beleg`. `pain_match_score` = gewichtete Summe der GEFUNDENEN Signale (hoch 45 / mittel 25 / niedrig 12, clamp 100). Signale aus Places (keine Website, etabliert-unsichtbar, Produkt-ohne-Sichtbarkeit, Fachkräftemangel-Branche) sind immer prüfbar; IG-/Website-Tech-Signale nur mit Enrichment, sonst `pruefbar:false → Erstkontakt`.
 4. **Verrechnung:** `zwischen = need × (0.5 + 0.5·pain/100)` (Pain verstärkt Need), `final = zwischen × (0.3 + 0.7·pay/100)` (Pay als Gate+Multiplikator). **fit < 40 → max COMMON.**
-5. **Oberindikator (scharfe Schwellen):** **IN NEED** = final ≥ 65 **und** pay ≥ 65 **und** fit ≥ 60 **und** ≥1 belegtes High-Weight-Pain. **INTERESTED** = final ≥ 40 und fit ≥ 50. Sonst **COMMON**. (Konsequenz der Multiplikation: IN NEED erreicht praktisch nur ein quasi-unsichtbarer Betrieb — meist OHNE eigene Website. Bewusst so „verschärft".)
+5. **Oberindikator (bedingungsbasiert, `einstufen`):** **IN NEED** = pay ≥ 60 **und** fit ≥ 55 **und** `igWeakHigh` (Account GEFUNDEN + öffentlich + keine Reels ODER letztes Reel > 90 Tage). **INTERESTED** = fit ≥ 50 und (irgendein hohes Pain ODER mittleres Pain & pay ≥ 45). Sonst **COMMON**. `final_score` ist nur Sortier-/Anzeigewert. **HARTE REGEL (Simon): ohne gefundenen IG-Account kein IN NEED** — den Bedarf kann man ohne den Account nicht wissen (`igWeakHigh` verlangt `igProbed && igExists`).
 6. **Output** (`QualifiedLead`): einstufung, tier (+`tier_c_on_hold`=off-profile), pay/need/fit/pain_match/final, `pay`/`need`/`fit` (Teilscores mit Signalen), `pain_signals[]`, ko_grund, im_erstkontakt_pruefen (4× `unbekannt`), empfehlung, begruendung_kurz.
 
 `Lead` (in `types.ts`) trägt diese Felder direkt (+ Enrichment-Felder `site*`/`instagramHandle`/`ig*`); `scan.ts` mappt `BusinessSignals` + `QualifiedLead` → `Lead`. Die Engine ist rein → `requalify` (Ketten-Toggle) rechnet live im Browser neu.
 
-### Enrichment — `lib/enrich.ts` (server-only, Layer im Scan)
-Pro Nicht-KO-Lead mit Website wird die Seite gefetcht (best-effort, Concurrency-Pool 10, hartes 28s-Budget — hängt den Scan nie auf) und liefert REALE Datenpunkte: HTTPS, Responsive-Viewport, erkannter Baukasten (Wix/Jimdo/…), verlinktes **Instagram-Handle** und best-effort IG-Aktivität (meist `null` → ehrlich „nicht ermittelbar"). Diese Signale speisen `need_score` und die Pain-Signale 5–7. Ergebnisse liegen auf dem Lead (Cache + reines Requalify).
+### Enrichment Layer 2 — `lib/enrich.ts` (server-only, im Scan)
+Pro Nicht-KO-Lead mit Website wird die Seite gefetcht (Concurrency-Pool 10, 28s-Budget) → HTTPS, Responsive, Baukasten, verlinktes **Instagram-Handle**.
+
+### Enrichment Layer 3 — Instagram via Apify — `lib/instagram.ts` + `app/api/instagram/route.ts`
+Nach dem Scan (Client-Effekt in `page.tsx`, Pass 2) bekommen nur verfolgenswerte Leads (pay ≥ 45, fit ≥ 50) echte IG-Daten:
+- **Handle von der Website** → schneller Batch-Profil-Scrape (`apify/instagram-profile-scraper`).
+- **kein Handle** → **Handle-RATEN** (`resolveByGuesses`): aus Firmenname + Branchen-Suffix (`muellerimmobilien`, `mueller_immobilien`, …) werden Kandidaten erzeugt, in EINEM schnellen Run gescrapet, und der Treffer mit den **meisten Namens-Tokens** gewählt. Das ist zuverlässiger/schneller als die alte Namens-Suche und findet auch leere Accounts. **Fehltreffer-Schutz:** keine blossen Nachnamen/`.de` raten, generische Wörter (immobilien/bewertung) zählen beim Abgleich nicht (`stripGeneric`).
+- Stub-Profile (Handle echo'd, aber leer) zählen NICHT als existent (`isRealProfile`).
+- Reels = `productType:"clips"`. Daraus: hat Reels?, letztes Reel (Tage), Reels in 90 Tagen. Speist `need_score` **und** die IG-Pain-Signale.
+- Ergebnis 3 Wochen pro Handle/Name gecacht (`STORAGE_KEYS.instaCache`), in die Leads gemerged + live re-bewertet → IG treibt die Stufe auf Karte/Liste. **Token:** `APIFY_API_TOKEN` (lokal + Vercel).
 
 ---
 

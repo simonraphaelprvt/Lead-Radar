@@ -42,12 +42,26 @@ interface IgPost {
 }
 interface IgProfile {
   username?: string;
+  fullName?: string;
+  biography?: string;
   private?: boolean;
   followersCount?: number;
   postsCount?: number;
   latestPosts?: IgPost[];
   error?: string;
   errorDescription?: string;
+}
+
+/** Echtes Profil (mit Daten) vs. Stub (Handle echo'd, aber leer = existiert nicht). */
+function isRealProfile(p: IgProfile): boolean {
+  return (
+    !!p.username &&
+    !p.error &&
+    (typeof p.postsCount === "number" ||
+      typeof p.followersCount === "number" ||
+      !!p.fullName ||
+      (Array.isArray(p.latestPosts) && p.latestPosts.length > 0))
+  );
 }
 
 const DAY = 86_400_000;
@@ -63,7 +77,7 @@ function deaccent(s: string): string {
 // nur der ECHTE Firmenname uebrig bleibt (sonst matcht "immobilienbewertung"
 // als Token quer). Substring-Entfernung, nicht nur ganze Token.
 const GENERIC_SUB =
-  /immobilienbewertung|immobilienverwaltung|hausverwaltung|immobilien|immobilie|bewertung|verwaltung|makler|maklerin|immo|estate|sachverstaendige?r?|gmbh|mbh|gruppe|group|consulting|official|deutschland/g;
+  /immobilienbewertung|immobilienverwaltung|hausverwaltung|immobilien|immobilie|bewertung|verwaltung|makler|maklerin|immo|estate|sachverstaendige?r?|gmbh|mbh|ohg|\binh\b|\bek\b|gruppe|group|consulting|official|deutschland/g;
 function stripGeneric(s: string): string {
   return deaccent(s).replace(GENERIC_SUB, " ");
 }
@@ -98,11 +112,10 @@ function reelsFromPosts(posts: IgPost[]): Pick<IgIntel, "hasReels" | "lastReelDa
 }
 
 function parseProfile(p: IgProfile, handle: string): IgIntel {
-  const exists = !!p.username && !p.error;
   const posts = Array.isArray(p.latestPosts) ? p.latestPosts : [];
   return {
     handle,
-    exists,
+    exists: isRealProfile(p), // Stub (leer) zaehlt NICHT als existent
     private: !!p.private,
     followers: typeof p.followersCount === "number" ? p.followersCount : null,
     postsCount: typeof p.postsCount === "number" ? p.postsCount : null,
@@ -130,36 +143,126 @@ function unknownIntel(handle: string): IgIntel {
  * (Apify-Run laeuft serverseitig ggf. weiter; wir geben einfach auf).
  * Liefert handle(lowercase) -> IgIntel. Bei Fehler/leer: leere Map.
  */
-export async function fetchIgProfiles(
-  handles: string[],
-  timeoutMs = 55_000,
-): Promise<Record<string, IgIntel>> {
+/** Roh-Profile (handle -> IgProfile) fuer mehrere Handles in EINEM Run. */
+async function fetchRawProfiles(handles: string[], timeoutMs = 55_000): Promise<Record<string, IgProfile>> {
   const clean = Array.from(new Set(handles.map((h) => h.replace(/^@/, "").toLowerCase()).filter(Boolean)));
   if (!TOKEN || clean.length === 0) return {};
-
   try {
     const res = await fetch(
       `https://api.apify.com/v2/acts/${ACTOR}/run-sync-get-dataset-items?token=${TOKEN}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ usernames: clean }),
+        body: JSON.stringify({ usernames: clean.slice(0, 150) }),
         signal: AbortSignal.timeout(timeoutMs),
       },
     );
     if (!res.ok) return {};
     const items = (await res.json()) as IgProfile[];
-    const out: Record<string, IgIntel> = {};
+    const out: Record<string, IgProfile> = {};
     for (const item of Array.isArray(items) ? items : []) {
       const u = (item.username ?? "").toLowerCase();
-      if (u) out[u] = parseProfile(item, u);
+      if (u) out[u] = item;
     }
-    // Handles ohne Treffer -> als "nicht existent/ermittelt" markieren.
-    for (const h of clean) if (!(h in out)) out[h] = unknownIntel(h);
     return out;
   } catch {
     return {};
   }
+}
+
+/** handle(lowercase) -> IgIntel. Handles ohne echtes Profil = "nicht existent". */
+export async function fetchIgProfiles(handles: string[], timeoutMs = 55_000): Promise<Record<string, IgIntel>> {
+  const clean = Array.from(new Set(handles.map((h) => h.replace(/^@/, "").toLowerCase()).filter(Boolean)));
+  const raw = await fetchRawProfiles(clean, timeoutMs);
+  const out: Record<string, IgIntel> = {};
+  for (const h of clean) out[h] = raw[h] ? parseProfile(raw[h], h) : unknownIntel(h);
+  return out;
+}
+
+// --- Handle-RATEN (Name -> wahrscheinliche Handles) -----------------
+function handleClean(s: string): string {
+  return deaccent(s).replace(/[^a-z0-9._]/g, "");
+}
+/** Wahrscheinliche Handles aus Firmenname + Branchen-Suffixen. */
+/** Anzahl distinktiver Namens-Tokens, die im Handle vorkommen (Treffer-Guete). */
+function nameMatchScore(handle: string, name: string): number {
+  const toks = distinctiveTokens(name);
+  if (toks.length === 0) return 0;
+  const h = stripGeneric(handle);
+  return toks.filter((t) => h.includes(t)).length;
+}
+
+/**
+ * Wahrscheinliche Handles aus Firmenname + BRANCHEN-Suffixen.
+ * Bewusst KEINE blossen Nachnamen / ".de"/"official" (matchen fremde Personen);
+ * nur kategorie-spezifische Formen + die volle Mehr-Token-Form.
+ */
+export function guessHandles(name: string, suffixes: string[]): string[] {
+  let toks = distinctiveTokens(name);
+  if (toks.length === 0) {
+    toks = deaccent(name).split(/[^a-z0-9]+/).filter((t) => t.length >= 4);
+  }
+  if (toks.length === 0) return [];
+  const cat = Array.from(
+    new Set(suffixes.map((s) => deaccent(s)).filter((s) => s.length >= 3 && s !== "official")),
+  );
+  const full = toks.join("");
+  const bases = new Set<string>([full, toks[0]]);
+  if (toks.length >= 2) bases.add(toks[0] + toks[1]);
+
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (g: string) => {
+    const h = handleClean(g);
+    if (h.length >= 4 && h.length <= 30 && !seen.has(h)) { seen.add(h); out.push(h); }
+  };
+  // Kategorie-Suffix-Formen (sicher).
+  for (const b of bases) for (const s of cat) { add(b + s); add(`${b}_${s}`); add(`${b}.${s}`); }
+  // Volle Mehr-Token-Form auch bare (spezifisch genug); Einzel-Token NICHT bare.
+  if (toks.length >= 2) { add(full); add(toks.join("_")); add(toks.join(".")); }
+  return out.slice(0, 12);
+}
+
+/**
+ * Aufloesen per Raten: generiert wahrscheinliche Handles, scraped alle in
+ * EINEM schnellen Run, nimmt pro Lead das beste ECHTE Profil, dessen Handle
+ * zum Namen passt. Schneller + zuverlaessiger als die Namens-Suche.
+ */
+export async function resolveByGuesses(
+  items: { key: string; name: string; suffixes: string[] }[],
+): Promise<Record<string, IgIntel | null>> {
+  const out: Record<string, IgIntel | null> = {};
+  if (!TOKEN || items.length === 0) return out;
+
+  const guessesByKey: Record<string, string[]> = {};
+  const allGuesses = new Set<string>();
+  for (const it of items) {
+    const g = guessHandles(it.name, it.suffixes);
+    guessesByKey[it.key] = g;
+    for (const h of g) allGuesses.add(h);
+  }
+  if (allGuesses.size === 0) {
+    for (const it of items) out[it.key] = null;
+    return out;
+  }
+
+  const raw = await fetchRawProfiles([...allGuesses]);
+
+  for (const it of items) {
+    let best: IgProfile | null = null;
+    let bestScore = -1;
+    for (const h of guessesByKey[it.key]) {
+      const p = raw[h];
+      if (!p || !isRealProfile(p)) continue;
+      // Treffer-Guete: wie viele Namens-Tokens steckt das Handle/der fullName?
+      const mc = Math.max(nameMatchScore(h, it.name), nameMatchScore(p.fullName ?? "", it.name));
+      if (mc === 0) continue; // kein Namensbezug -> kein Treffer
+      const score = mc * 1_000_000 + Math.min(p.postsCount ?? 0, 999_999);
+      if (score > bestScore) { bestScore = score; best = p; }
+    }
+    out[it.key] = best ? parseProfile(best, (best.username ?? "").toLowerCase()) : null;
+  }
+  return out;
 }
 
 /**

@@ -106,6 +106,6 @@ export const STORAGE_KEYS = {
   ui: "lr_ui_state",
   enrichCache: "lr_enrich_cache",
   googleCache: "lr_google_cache",
-  instaCache: "lr_insta_cache_v2",
+  instaCache: "lr_insta_cache_v3",
   booted: "lr_booted",
 };

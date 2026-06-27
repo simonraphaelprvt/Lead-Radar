@@ -160,14 +160,25 @@ const IG_NOT_FOUND: IgIntel = {
 function normNameKey(n: string): string {
   return "q:" + n.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
-function cityOf(l: Lead): string {
-  const m = (l.address || "").match(/\b\d{5}\s+([A-Za-zÄÖÜäöüß .'-]+)/);
-  return m ? m[1].split(",")[0].trim() : "";
-}
-/** Instagram-Suchanfrage: Name ohne Rechtsform + Ort. */
-function igSearchQuery(l: Lead): string {
-  const name = l.name.replace(/\b(gmbh|ug|e\.?\s?k\.?|kg|ohg|mbh|inh\.?|&\s?co\.?\s?kg)\b/gi, "").trim();
-  return `${name} ${cityOf(l)}`.trim();
+/** Branchen-Suffixe fuers Handle-Raten (z.B. "muellerimmobilien"). */
+function igSuffixes(l: Lead): string[] {
+  const hay = l.categoryLabel.toLowerCase();
+  const map: [RegExp, string[]][] = [
+    [/immobil|makler|estate/, ["immobilien", "immo"]],
+    [/restaurant|gastro/, ["restaurant", "food"]],
+    [/hotel|resort/, ["hotel"]],
+    [/caf|bar|club|disko/, ["bar", "cafe"]],
+    [/beauty|kosmetik/, ["beauty", "kosmetik", "cosmetics"]],
+    [/friseur|hair/, ["friseur", "hair", "hairstyle"]],
+    [/fitness|studio|gym/, ["fitness", "gym"]],
+    [/auto|kfz/, ["automobile", "cars"]],
+    [/zahn|dentist|praxis|arzt/, ["praxis", "zahnarztpraxis"]],
+    [/event|location/, ["events"]],
+    [/bau|handwerk/, ["bau"]],
+  ];
+  const out = new Set<string>();
+  for (const [re, sfx] of map) if (re.test(hay)) sfx.forEach((s) => out.add(s));
+  return [...out];
 }
 
 export default function Page() {
@@ -242,7 +253,7 @@ export default function Page() {
     setScanErrors([]);
     const cats = [...categories].sort();
     // v6: + Apify-Instagram (Reels-Signale) -> aeltere Caches inkompatibel.
-    const key = `v7|${origin.lat.toFixed(4)},${origin.lng.toFixed(4)},${radiusKm},${cats.join("+")}`;
+    const key = `v8|${origin.lat.toFixed(4)},${origin.lng.toFixed(4)},${radiusKm},${cats.join("+")}`;
 
     setScanning(true);
     const started = Date.now();
@@ -390,7 +401,8 @@ export default function Page() {
       const needHandles: string[] = [];
       const handleLeads: Record<string, string[]> = {};
       const cachedMerge: Record<string, IgIntel> = {};
-      const searchJobs: { leadId: string; nk: string; query: string; name: string }[] = [];
+      const resolveJobs: { key: string; nk: string; name: string; suffixes: string[] }[] = [];
+      const nkByLead: Record<string, string> = {};
       for (const l of cands) {
         const h = (l.instagramHandle ?? "").toLowerCase();
         if (h) {
@@ -400,13 +412,15 @@ export default function Page() {
           else if (!needHandles.includes(h)) needHandles.push(h);
         } else {
           const nk = normNameKey(l.name);
+          nkByLead[l.id] = nk;
           const hit = cacheGet(nk);
           if (hit) cachedMerge[l.id] = hit;
-          else searchJobs.push({ leadId: l.id, nk, query: igSearchQuery(l), name: l.name });
+          else resolveJobs.push({ key: l.id, nk, name: l.name, suffixes: igSuffixes(l) });
         }
       }
       if (Object.keys(cachedMerge).length > 0) apply(cachedMerge);
 
+      // 1) Handle-Leads: Batch-Profil-Scrape (schnell).
       if (needHandles.length > 0) {
         try {
           const res = await fetch("/api/instagram", {
@@ -427,29 +441,30 @@ export default function Page() {
         }
       }
 
-      // 2) Namens-Suchen: je EIN Call (zuverlaessig <60s), Nebenlaeufigkeit 3,
-      //    progressives Update pro Treffer.
-      let idx = 0;
-      const worker = async () => {
-        while (idx < searchJobs.length) {
-          const job = searchJobs[idx++];
-          try {
-            const res = await fetch("/api/instagram", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ searches: [{ key: job.leadId, query: job.query, name: job.name }] }),
-            });
-            const data = (await res.json()) as { searchResults?: Record<string, IgIntel | null> };
-            const intel = (data.searchResults ?? {})[job.leadId] ?? null;
-            const val = intel ?? IG_NOT_FOUND; // negativ cachen -> nicht erneut suchen
+      // 2) Handle-lose Leads: RATEN (Name+Suffix -> Profil-Scrape, ein Batch).
+      if (resolveJobs.length > 0) {
+        try {
+          const res = await fetch("/api/instagram", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              resolves: resolveJobs.map((j) => ({ key: j.key, name: j.name, suffixes: j.suffixes })),
+            }),
+          });
+          const data = (await res.json()) as { resolveResults?: Record<string, IgIntel | null> };
+          const rr = data.resolveResults ?? {};
+          const merge: Record<string, IgIntel> = {};
+          for (const job of resolveJobs) {
+            const intel = rr[job.key] ?? null;
+            const val = intel ?? IG_NOT_FOUND; // negativ cachen
             cachePut(job.nk, val);
-            apply({ [job.leadId]: val });
-          } catch {
-            /* Lead bleibt ohne IG */
+            merge[job.key] = val;
           }
+          if (Object.keys(merge).length > 0) apply(merge);
+        } catch {
+          /* Leads bleiben ohne IG */
         }
-      };
-      await Promise.all([worker(), worker(), worker()]);
+      }
     },
     [filterChains],
   );
@@ -469,7 +484,7 @@ export default function Page() {
     // Handle-Leads sind billig (ein Batch); Namens-Suchen gedeckelt (langsam).
     // Ueber dem Deckel liegende Such-Leads bleiben fuer die naechste Runde offen.
     const withHandle = cands.filter((l) => l.instagramHandle);
-    const noHandle = cands.filter((l) => !l.instagramHandle).slice(0, 8);
+    const noHandle = cands.filter((l) => !l.instagramHandle).slice(0, 12);
     const process = [...withHandle, ...noHandle];
     if (process.length === 0) return;
     for (const l of process) igAttempted.current.add(l.id);
